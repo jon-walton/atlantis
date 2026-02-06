@@ -1,7 +1,10 @@
 name: "Pull Request Labeler"
 
+# NOTE: This is the upstream workflow. It only runs on 'main' (upstream tracking branch).
 on:
   pull_request_target:
+    branches:
+      - 'main'
     types:
       - opened
       - reopened

@@ -1,14 +1,13 @@
 name: testing-env-image
 
+# NOTE: This is the upstream workflow. It only runs on 'main' (upstream tracking branch).
 on:
   push:
     branches:
       - 'main'
-      - 'release-**'
   pull_request:
     branches:
       - 'main'
-      - 'release-**'
   workflow_dispatch:
 
 concurrency:

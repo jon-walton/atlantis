@@ -1,15 +1,17 @@
 name: renovate-config
 
+# NOTE: This is the upstream workflow. It only runs on 'main' (upstream tracking branch).
 on:
   push:
     paths:
       - '.github/renovate.json5'
     branches:
       - main
-      - 'releases-**'
   pull_request:
     paths:
       - '.github/renovate.json5'
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:

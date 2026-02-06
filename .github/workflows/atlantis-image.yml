@@ -1,16 +1,16 @@
 name: atlantis-image
 
+# NOTE: This is the upstream workflow. It only runs on 'main' (upstream tracking branch).
+# For internal builds, see cph-build.yml which triggers on 'master-cph'.
 on:
   push:
     branches:
       - 'main'
-      - 'release-**'
     tags:
       - v*.*.*
   pull_request:
     branches:
       - 'main'
-      - 'release-**'
     types:
       - opened
       - reopened

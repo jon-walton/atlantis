@@ -6,8 +6,12 @@
 # PRs introducing known-vulnerable packages will be blocked from merging.
 #
 # Source repository: https://github.com/actions/dependency-review-action
+# NOTE: This is the upstream workflow. It only runs on 'main' (upstream tracking branch).
 name: 'Dependency Review'
-on: [pull_request]
+on:
+  pull_request:
+    branches:
+      - 'main'
 
 permissions:
   contents: read

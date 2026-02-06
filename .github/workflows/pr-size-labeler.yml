@@ -1,6 +1,10 @@
 name: pr-size
 
-on: [pull_request]
+# NOTE: This is the upstream workflow. It only runs on 'main' (upstream tracking branch).
+on:
+  pull_request:
+    branches:
+      - 'main'
 
 permissions:
   contents: read
