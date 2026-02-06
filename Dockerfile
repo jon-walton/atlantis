@@ -34,22 +34,14 @@ ENV DEFAULT_CONFTEST_VERSION=${DEFAULT_CONFTEST_VERSION}
 
 WORKDIR /app
 
-# This is needed to download transitive dependencies instead of compiling them
-# https://github.com/montanaflynn/golang-docker-cache
-# https://github.com/golang/go/issues/27719
-# renovate: datasource=repology depName=alpine_3_22/bash versioning=loose
-ENV BUILDER_BASH_VERSION="5.2.37-r0"
-RUN apk add --no-cache \
-        bash=${BUILDER_BASH_VERSION}
 COPY go.mod go.sum ./
-SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 RUN --mount=type=cache,target=/go/pkg/mod \
-    go mod graph | awk '{if ($1 !~ "@") print $2}' | xargs go get
+    go mod download
 
 COPY . /app
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags "-s -w -X 'main.version=${ATLANTIS_VERSION}' -X 'main.commit=${ATLANTIS_COMMIT}' -X 'main.date=${ATLANTIS_DATE}'" -v -o atlantis .
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags "-s -w -X 'main.version=${ATLANTIS_VERSION}' -X 'main.commit=${ATLANTIS_COMMIT}' -X 'main.date=${ATLANTIS_DATE}'" -o atlantis .
 
 FROM debian:${DEBIAN_TAG} AS debian-base
 

@@ -66,6 +66,8 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    outputs:
+      image-tag: ${{ steps.image.outputs.full-tag }}
 
     steps:
       - uses: actions/checkout@v4
@@ -103,10 +105,10 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          push: ${{ github.event_name == 'push' }}
+          push: true
           tags: ${{ env.IMAGE }}:${{ steps.tag.outputs.tag }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=registry,ref=${{ env.IMAGE }}:buildcache
+          cache-to: type=registry,ref=${{ env.IMAGE }}:buildcache,mode=max
           target: alpine
           build-args: |
             ATLANTIS_BASE_TAG_TYPE=alpine
@@ -114,29 +116,40 @@ jobs:
             ATLANTIS_COMMIT=${{ github.sha }}
             ATLANTIS_DATE=${{ github.event.head_commit.timestamp }}
 
+      - name: Output image tag
+        id: image
+        run: echo "full-tag=${{ env.IMAGE }}:${{ steps.tag.outputs.tag }}" >> $GITHUB_OUTPUT
+
   test:
     name: Test Image With Goss
-    needs: [changes]
-    if: needs.changes.outputs.should-build == 'true'
+    needs: [build]
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build and load into Docker
-        uses: docker/build-push-action@v6
+      - name: Authenticate to Google Cloud
+        id: auth
+        uses: google-github-actions/auth@v2
         with:
-          context: .
-          build-args: |
-            ATLANTIS_BASE_TAG_TYPE=alpine
-          push: false
-          load: true
-          tags: "atlantis:goss-test"
-          target: alpine
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          workload_identity_provider: ${{ env.WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.SERVICE_ACCOUNT }}
+          token_format: access_token
+
+      - name: Login to Artifact Registry
+        uses: docker/login-action@v3
+        with:
+          registry: us-docker.pkg.dev
+          username: oauth2accesstoken
+          password: ${{ steps.auth.outputs.access_token }}
+
+      - name: Pull image for testing
+        run: |
+          docker pull ${{ needs.build.outputs.image-tag }}
+          docker tag ${{ needs.build.outputs.image-tag }} atlantis:goss-test
 
       - name: Setup Goss
         uses: e1himself/goss-installation-action@v1
