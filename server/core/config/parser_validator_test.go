@@ -2300,3 +2300,62 @@ projects:
 		Assert(t, p.Name == nil, "expanded projects should not have names")
 	}
 }
+
+func TestDependsOn_ValidChain(t *testing.T) {
+	input := `
+version: 3
+projects:
+- name: infra
+  dir: infra
+- name: app
+  dir: app
+  depends_on:
+  - infra
+`
+	tmpDir := t.TempDir()
+	err := os.WriteFile(filepath.Join(tmpDir, "atlantis.yaml"), []byte(input), 0600)
+	Ok(t, err)
+
+	r := config.ParserValidator{}
+	cfg, err := r.ParseRepoCfg(tmpDir, globalCfg, "", "")
+	Ok(t, err)
+	Equals(t, 2, len(cfg.Projects))
+	Equals(t, []string{"infra"}, cfg.Projects[1].DependsOn)
+}
+
+func TestDependsOn_NonExistentDependency(t *testing.T) {
+	input := `
+version: 3
+projects:
+- name: app
+  dir: app
+  depends_on:
+  - nonexistent
+`
+	tmpDir := t.TempDir()
+	err := os.WriteFile(filepath.Join(tmpDir, "atlantis.yaml"), []byte(input), 0600)
+	Ok(t, err)
+
+	r := config.ParserValidator{}
+	_, err = r.ParseRepoCfg(tmpDir, globalCfg, "", "")
+	ErrContains(t, `depends_on "nonexistent", but no project named "nonexistent" exists`, err)
+}
+
+func TestDependsOn_UnnamedProjectWithDeps(t *testing.T) {
+	input := `
+version: 3
+projects:
+- name: infra
+  dir: infra
+- dir: app
+  depends_on:
+  - infra
+`
+	tmpDir := t.TempDir()
+	err := os.WriteFile(filepath.Join(tmpDir, "atlantis.yaml"), []byte(input), 0600)
+	Ok(t, err)
+
+	r := config.ParserValidator{}
+	_, err = r.ParseRepoCfg(tmpDir, globalCfg, "", "")
+	ErrContains(t, "uses depends_on but has no name", err)
+}

@@ -93,6 +93,23 @@ func (p Project) Validate() error {
 	}
 
 	DependsOn := func(value any) error {
+		deps := value.([]string)
+		for _, dep := range deps {
+			if dep == "" {
+				return errors.New("depends_on entries cannot be empty strings")
+			}
+			if !validProjectName(dep) {
+				return fmt.Errorf("depends_on entry %q is not a valid project name", dep)
+			}
+		}
+		// Self-reference check (requires name to be set).
+		if p.Name != nil {
+			for _, dep := range deps {
+				if dep == *p.Name {
+					return fmt.Errorf("project %q cannot depend on itself", *p.Name)
+				}
+			}
+		}
 		return nil
 	}
 

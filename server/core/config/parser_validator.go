@@ -123,6 +123,9 @@ func (p *ParserValidator) parseRawRepoCfg(rawConfig raw.RepoCfg, globalCfg valid
 	if err := p.validateProjectNames(validConfig); err != nil {
 		return valid.RepoCfg{}, err
 	}
+	if err := p.validateProjectDependencies(validConfig); err != nil {
+		return valid.RepoCfg{}, err
+	}
 	if validConfig.Version == 2 {
 		// The only difference between v2 and v3 is how we parse custom run
 		// commands.
@@ -220,6 +223,43 @@ func (p *ParserValidator) validateProjectNames(config valid.RepoCfg) error {
 		dirWorkspaceToNames[key] = append(dirWorkspaceToNames[key], name)
 	}
 
+	return nil
+}
+
+// validateProjectDependencies checks that all depends_on references point to
+// existing named projects, and that projects using depends_on are themselves
+// named.
+func (p *ParserValidator) validateProjectDependencies(config valid.RepoCfg) error {
+	// Build a set of all named projects.
+	namedProjects := make(map[string]bool)
+	for _, project := range config.Projects {
+		if project.Name != nil {
+			namedProjects[*project.Name] = true
+		}
+	}
+
+	for _, project := range config.Projects {
+		// A project using depends_on must itself be named.
+		if len(project.DependsOn) > 0 && project.Name == nil {
+			return fmt.Errorf(
+				"project at dir %q uses depends_on but has no name; "+
+					"projects using depends_on must have a name",
+				project.Dir,
+			)
+		}
+		for _, dep := range project.DependsOn {
+			if !namedProjects[dep] {
+				projName := "<unnamed>"
+				if project.Name != nil {
+					projName = *project.Name
+				}
+				return fmt.Errorf(
+					"project %q depends_on %q, but no project named %q exists",
+					projName, dep, dep,
+				)
+			}
+		}
+	}
 	return nil
 }
 

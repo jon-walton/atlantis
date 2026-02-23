@@ -418,6 +418,52 @@ func TestProject_Validate(t *testing.T) {
 			},
 			expErr: "",
 		},
+		// depends_on validation tests
+		{
+			description: "depends_on with empty string entry",
+			input: raw.Project{
+				Dir:       String("."),
+				Name:      String("myproject"),
+				DependsOn: []string{""},
+			},
+			expErr: "depends_on: depends_on entries cannot be empty strings.",
+		},
+		{
+			description: "depends_on with valid project name",
+			input: raw.Project{
+				Dir:       String("."),
+				Name:      String("myproject"),
+				DependsOn: []string{"valid-name"},
+			},
+			expErr: "",
+		},
+		{
+			description: "depends_on with name containing spaces",
+			input: raw.Project{
+				Dir:       String("."),
+				Name:      String("myproject"),
+				DependsOn: []string{"name with spaces"},
+			},
+			expErr: `depends_on: depends_on entry "name with spaces" is not a valid project name.`,
+		},
+		{
+			description: "depends_on self-reference",
+			input: raw.Project{
+				Dir:       String("."),
+				Name:      String("myproject"),
+				DependsOn: []string{"myproject"},
+			},
+			expErr: `depends_on: project "myproject" cannot depend on itself.`,
+		},
+		{
+			description: "depends_on with slashes is valid",
+			input: raw.Project{
+				Dir:       String("."),
+				Name:      String("myproject"),
+				DependsOn: []string{"infra/networking"},
+			},
+			expErr: "",
+		},
 	}
 	validation.ErrorTag = "yaml"
 	for _, c := range cases {
