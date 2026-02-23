@@ -4,6 +4,8 @@
 package events
 
 import (
+	"fmt"
+
 	"github.com/runatlantis/atlantis/server/core/db"
 	"github.com/runatlantis/atlantis/server/core/locking"
 	"github.com/runatlantis/atlantis/server/events/command"
@@ -27,6 +29,8 @@ func NewApplyCommandRunner(
 	SilenceNoProjects bool,
 	silenceVCSStatusNoProjects bool,
 	pullReqStatusFetcher vcs.PullReqStatusFetcher,
+	layerManager *LayerManager,
+	planCommandRunner *PlanCommandRunner,
 ) *ApplyCommandRunner {
 	return &ApplyCommandRunner{
 		vcsClient:                  vcsClient,
@@ -44,6 +48,8 @@ func NewApplyCommandRunner(
 		SilenceNoProjects:          SilenceNoProjects,
 		silenceVCSStatusNoProjects: silenceVCSStatusNoProjects,
 		pullReqStatusFetcher:       pullReqStatusFetcher,
+		layerManager:               layerManager,
+		planCommandRunner:          planCommandRunner,
 	}
 }
 
@@ -68,9 +74,20 @@ type ApplyCommandRunner struct {
 	// are found
 	silenceVCSStatusNoProjects bool
 	SilencePRComments          []string
+	// layerManager is the lifecycle coordinator for layered planning.
+	// Nil when layered planning is not enabled.
+	layerManager *LayerManager
+	// planCommandRunner is used to trigger next-layer planning after apply completes a layer.
+	planCommandRunner *PlanCommandRunner
 }
 
 func (a *ApplyCommandRunner) Run(ctx *command.Context, cmd *CommentCommand) {
+	// Handle skip command
+	if cmd.SkipProject != "" {
+		a.handleSkip(ctx, cmd)
+		return
+	}
+
 	var err error
 	baseRepo := ctx.Pull.BaseRepo
 	pull := ctx.Pull
@@ -160,6 +177,44 @@ func (a *ApplyCommandRunner) Run(ctx *command.Context, cmd *CommentCommand) {
 		return
 	}
 
+	// Layered planning: load layer state and optionally filter to current layer
+	layered := false
+	var layerState *models.LayerState
+	if a.layerManager != nil {
+		existingStatus, fetchErr := a.Database.GetPullStatus(pull)
+		if fetchErr == nil && existingStatus != nil && existingStatus.LayerState != nil {
+			layerState = existingStatus.LayerState
+			if a.layerManager.HasMultipleLayers(layerState) {
+				layered = true
+				// Only filter to current layer for apply-all; specific project
+				// applies target the exact project the user requested but must
+				// be validated against the current layer.
+				if !cmd.IsForSpecificProject() {
+					projectCmds = a.layerManager.FilterToCurrentLayer(projectCmds, layerState)
+				} else if len(projectCmds) > 0 && !a.layerManager.IsInCurrentLayer(projectCmds[0], layerState) {
+					ctx.Log.Info("rejecting apply for project not in current layer")
+					a.vcsClient.CreateComment(
+						ctx.Log, baseRepo, pull.Num,
+						fmt.Sprintf(
+							"**Error:** Project `%s` is in layer %d, but the current layer is %d. "+
+								"Apply all projects in the current layer first before applying projects in later layers.",
+							projectCmds[0].ProjectName, layerState.ProjectLayers[projectContextKey(projectCmds[0])], layerState.CurrentLayer,
+						),
+						command.Apply.String(),
+					)
+					return
+				}
+				ctx.Log.Info("layered apply: layer %d active (%d projects)", layerState.CurrentLayer, len(projectCmds))
+			}
+		}
+	}
+
+	// Layered planning: show "Applying..." status on the dashboard before
+	// running applies so users see progress in real time.
+	if layered {
+		a.markProjectsApplying(ctx, pull, projectCmds, layerState)
+	}
+
 	result := runProjectCmdsWithCancellationTracker(ctx, projectCmds, a.cancellationTracker, a.parallelPoolSize, a.isParallelEnabled(projectCmds), a.prjCmdRunner.Apply)
 	ctx.CommandHasErrors = result.HasErrors()
 
@@ -176,9 +231,208 @@ func (a *ApplyCommandRunner) Run(ctx *command.Context, cmd *CommentCommand) {
 
 	a.updateCommitStatus(ctx, pullStatus)
 
-	if a.autoMerger.automergeEnabled(projectCmds) && !cmd.AutoMergeDisabled {
-		a.autoMerger.automerge(ctx, pullStatus, a.autoMerger.deleteSourceBranchOnMergeEnabled(projectCmds), cmd.AutoMergeMethod)
+	// Layered planning: stamp layer assignments (they're not persisted on
+	// individual project statuses, only in LayerState.ProjectLayers) and
+	// then check if layer is complete and trigger next layer.
+	if layered {
+		a.layerManager.StampAndSaveLayerState(&pullStatus, layerState)
 	}
+	if layered && !result.HasErrors() {
+		a.handleLayerCompletion(ctx, cmd, &pullStatus, layerState)
+	} else if layered {
+		// Update dashboard even on error
+		a.layerManager.UpdateDashboard(ctx, &pullStatus)
+	}
+
+	// Only automerge if all layers are complete (or not layered)
+	if a.autoMerger.automergeEnabled(projectCmds) && !cmd.AutoMergeDisabled {
+		if layered {
+			if a.layerManager.stateManager.IsAllComplete(&pullStatus) {
+				a.autoMerger.automerge(ctx, pullStatus, a.autoMerger.deleteSourceBranchOnMergeEnabled(projectCmds), cmd.AutoMergeMethod)
+			} else {
+				ctx.Log.Info("skipping automerge: not all layers are complete")
+			}
+		} else {
+			a.autoMerger.automerge(ctx, pullStatus, a.autoMerger.deleteSourceBranchOnMergeEnabled(projectCmds), cmd.AutoMergeMethod)
+		}
+	}
+}
+
+// handleLayerCompletion checks if the current layer is done and triggers
+// planning for the next layer if so. If the newly planned layer has all
+// no-changes projects (PlannedNoChangesPlanStatus or SkippedPlanStatus),
+// it auto-advances through successive layers until a layer has actual
+// changes or all layers are complete.
+func (a *ApplyCommandRunner) handleLayerCompletion(
+	ctx *command.Context,
+	cmd *CommentCommand,
+	pullStatus *models.PullStatus,
+	layerState *models.LayerState,
+) {
+	// Safety bound: never loop more than TotalLayers times to prevent
+	// infinite loops from unexpected state.
+	maxIterations := layerState.TotalLayers
+	if maxIterations < 1 {
+		maxIterations = 1
+	}
+
+	for iteration := 0; iteration < maxIterations; iteration++ {
+		canAdvance := a.layerManager.stateManager.CanAdvance(pullStatus)
+		if !canAdvance {
+			ctx.Log.Debug("current layer not yet complete, waiting for remaining projects")
+			a.layerManager.UpdateDashboard(ctx, pullStatus)
+			return
+		}
+
+		newState, nextProjects, err := a.layerManager.stateManager.AdvanceLayer(pullStatus)
+		if err != nil {
+			ctx.Log.Err("advancing layer: %s", err)
+			a.layerManager.UpdateDashboard(ctx, pullStatus)
+			return
+		}
+
+		if a.layerManager.stateManager.IsAllComplete(pullStatus) {
+			ctx.Log.Info("all layers complete")
+			a.layerManager.UpdateDashboard(ctx, pullStatus)
+			return
+		}
+
+		// Save new layer state
+		pullStatus.LayerState = newState
+		if a.Database != nil {
+			if err := a.Database.UpdateLayerState(ctx.Pull, newState); err != nil {
+				ctx.Log.Err("saving layer state after advance: %s", err)
+			}
+		}
+
+		a.layerManager.UpdateDashboard(ctx, pullStatus)
+
+		// Trigger planning for next layer projects
+		if len(nextProjects) == 0 || a.planCommandRunner == nil {
+			return
+		}
+
+		ctx.Log.Info("triggering planning for next layer (%d projects): %v", len(nextProjects), nextProjects)
+		nextCmd := &CommentCommand{
+			Name: command.Plan,
+		}
+		a.planCommandRunner.run(ctx, nextCmd)
+
+		// After cascade planning, re-fetch pull status to check if the
+		// newly planned layer is already complete (all no-changes).
+		updatedStatus, err := a.Database.GetPullStatus(ctx.Pull)
+		if err != nil || updatedStatus == nil {
+			ctx.Log.Err("fetching pull status after cascade plan: %s", err)
+			return
+		}
+
+		// Ensure the layer state is current
+		a.layerManager.StampAndSaveLayerState(updatedStatus, newState)
+		pullStatus = updatedStatus
+
+		// Check if the newly planned layer is already complete
+		// (all projects have terminal status like PlannedNoChangesPlanStatus).
+		// If not, we stop and wait for the user to apply.
+		complete, _ := a.layerManager.stateManager.IsLayerComplete(pullStatus, newState.CurrentLayer)
+		if !complete {
+			// Layer has projects that need apply — stop here
+			return
+		}
+
+		ctx.Log.Info("layer %d has all no-changes projects, auto-advancing", newState.CurrentLayer)
+		// Loop continues: advance through this no-changes layer
+	}
+
+	ctx.Log.Warn("auto-advance safety bound reached after %d iterations", maxIterations)
+	a.layerManager.UpdateDashboard(ctx, pullStatus)
+}
+
+// handleSkip handles the `atlantis apply --skip <project>` command.
+func (a *ApplyCommandRunner) handleSkip(ctx *command.Context, cmd *CommentCommand) {
+	pull := ctx.Pull
+
+	if a.layerManager == nil {
+		if err := a.vcsClient.CreateComment(ctx.Log, pull.BaseRepo, pull.Num,
+			"**Error:** `--skip` requires layered planning to be enabled.",
+			command.Apply.String()); err != nil {
+			ctx.Log.Err("unable to comment on pull request: %s", err)
+		}
+		return
+	}
+
+	pullStatus, err := a.Database.GetPullStatus(pull)
+	if err != nil || pullStatus == nil || pullStatus.LayerState == nil {
+		if err := a.vcsClient.CreateComment(ctx.Log, pull.BaseRepo, pull.Num,
+			"**Error:** No active layered planning state found for this pull request.",
+			command.Apply.String()); err != nil {
+			ctx.Log.Err("unable to comment on pull request: %s", err)
+		}
+		return
+	}
+
+	// Use the state manager to skip the project
+	updatedStatus, err := a.layerManager.stateManager.SkipProject(pullStatus, cmd.SkipProject, true)
+	if err != nil {
+		if err := a.vcsClient.CreateComment(ctx.Log, pull.BaseRepo, pull.Num,
+			fmt.Sprintf("**Error:** Could not skip project `%s`: %s", cmd.SkipProject, err),
+			command.Apply.String()); err != nil {
+			ctx.Log.Err("unable to comment on pull request: %s", err)
+		}
+		return
+	}
+
+	// Save updated layer state and persist the project's new SkippedPlanStatus
+	// so the skip survives a server restart.
+	if a.Database != nil {
+		if err := a.Database.UpdateLayerState(pull, updatedStatus.LayerState); err != nil {
+			ctx.Log.Err("saving layer state after skip: %s", err)
+		}
+		// Find the skipped project to get workspace/repoRelDir for persistence
+		for _, proj := range updatedStatus.Projects {
+			if proj.ProjectName == cmd.SkipProject && proj.Status == models.SkippedPlanStatus {
+				if err := a.Database.UpdateProjectStatus(pull, proj.Workspace, proj.RepoRelDir, models.SkippedPlanStatus); err != nil {
+					ctx.Log.Err("persisting skip status: %s", err)
+				}
+				break
+			}
+		}
+	}
+
+	if err := a.vcsClient.CreateComment(ctx.Log, pull.BaseRepo, pull.Num,
+		fmt.Sprintf("Project `%s` has been skipped.", cmd.SkipProject),
+		command.Apply.String()); err != nil {
+		ctx.Log.Err("unable to comment on pull request: %s", err)
+	}
+
+	a.updateCommitStatus(ctx, *updatedStatus)
+	a.layerManager.UpdateDashboard(ctx, updatedStatus)
+
+	// Check if skipping completed the layer
+	a.handleLayerCompletion(ctx, cmd, updatedStatus, updatedStatus.LayerState)
+}
+
+// markProjectsApplying updates the DB and dashboard to show "Applying..."
+// for projects that are about to be applied.
+func (a *ApplyCommandRunner) markProjectsApplying(
+	ctx *command.Context,
+	pull models.PullRequest,
+	projectCmds []command.ProjectContext,
+	layerState *models.LayerState,
+) {
+	// Update each project's status in the DB to ApplyingStatus
+	for _, cmd := range projectCmds {
+		if err := a.Database.UpdateProjectStatus(pull, cmd.Workspace, cmd.RepoRelDir, models.ApplyingStatus); err != nil {
+			ctx.Log.Err("updating project status to applying: %s", err)
+		}
+	}
+
+	// Reload pull status and update dashboard
+	pullStatus, err := a.Database.GetPullStatus(pull)
+	if err != nil || pullStatus == nil {
+		return
+	}
+	a.layerManager.StampAndSaveLayerState(pullStatus, layerState)
+	a.layerManager.UpdateDashboard(ctx, pullStatus)
 }
 
 func (a *ApplyCommandRunner) IsLocked() (bool, error) {
@@ -196,7 +450,7 @@ func (a *ApplyCommandRunner) updateCommitStatus(ctx *command.Context, pullStatus
 	var numErrored int
 	status := models.SuccessCommitStatus
 
-	numSuccess = pullStatus.StatusCount(models.AppliedPlanStatus) + pullStatus.StatusCount(models.PlannedNoChangesPlanStatus)
+	numSuccess = pullStatus.StatusCount(models.AppliedStatus) + pullStatus.StatusCount(models.PlannedNoChangesPlanStatus)
 	numErrored = pullStatus.StatusCount(models.ErroredApplyStatus)
 
 	if numErrored > 0 {

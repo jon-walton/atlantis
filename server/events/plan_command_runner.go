@@ -4,6 +4,9 @@
 package events
 
 import (
+	"fmt"
+
+	"github.com/runatlantis/atlantis/server/core/db"
 	"github.com/runatlantis/atlantis/server/core/locking"
 	"github.com/runatlantis/atlantis/server/events/command"
 	"github.com/runatlantis/atlantis/server/events/models"
@@ -39,6 +42,8 @@ func NewPlanCommandRunner(
 	discardApprovalOnPlan bool,
 	pullReqStatusFetcher vcs.PullReqStatusFetcher,
 	PendingApplyStatus bool,
+	layerManager *LayerManager,
+	database db.Database,
 
 ) *PlanCommandRunner {
 	return &PlanCommandRunner{
@@ -62,6 +67,8 @@ func NewPlanCommandRunner(
 		DiscardApprovalOnPlan:      discardApprovalOnPlan,
 		pullReqStatusFetcher:       pullReqStatusFetcher,
 		PendingApplyStatus:         PendingApplyStatus,
+		layerManager:               layerManager,
+		database:                   database,
 	}
 }
 
@@ -95,6 +102,11 @@ type PlanCommandRunner struct {
 	pullReqStatusFetcher  vcs.PullReqStatusFetcher
 	SilencePRComments     []string
 	PendingApplyStatus    bool
+	// layerManager is the lifecycle coordinator for layered planning.
+	// Nil when layered planning is not enabled.
+	layerManager *LayerManager
+	// database is used for layer state persistence.
+	database db.Database
 }
 
 func (p *PlanCommandRunner) runAutoplan(ctx *command.Context) {
@@ -135,6 +147,44 @@ func (p *PlanCommandRunner) runAutoplan(ctx *command.Context) {
 		return
 	}
 
+	// Layered planning gate
+	layered := false
+	var layerState *models.LayerState
+	if p.layerManager != nil && p.layerManager.ShouldActivate(projectCmds) {
+		// Check for existing layer state (re-plan on push scenario)
+		if p.database != nil {
+			existingStatus, fetchErr := p.database.GetPullStatus(pull)
+			if fetchErr == nil && existingStatus != nil && existingStatus.LayerState != nil {
+				// Existing layered state found -- determine re-plan scope
+				ctx.Log.Info("existing layered state found, determining re-plan scope")
+				p.handleLayeredReplan(ctx, existingStatus, projectCmds, policyCheckCmds)
+				return
+			}
+		}
+
+		// No existing state -- initialize fresh
+		layerState, err = p.layerManager.InitializeLayerState(projectCmds)
+		if err != nil {
+			ctx.Log.Err("layered planning error: %s", err)
+			p.pullUpdater.updatePull(ctx, AutoplanCommand{}, command.Result{
+				Error: fmt.Errorf("layered planning error: %w", err),
+			})
+			return
+		}
+		if p.layerManager.HasMultipleLayers(layerState) {
+			layered = true
+			ctx.Log.Info("layered planning activated: %d layers", layerState.TotalLayers)
+		}
+	}
+
+	if layered {
+		// Post the initial dashboard before plan results so it's the first comment
+		p.layerManager.PostInitialDashboard(ctx, layerState, projectCmds)
+
+		projectCmds = p.layerManager.FilterToCurrentLayer(projectCmds, layerState)
+		policyCheckCmds = p.layerManager.FilterToCurrentLayer(policyCheckCmds, layerState)
+	}
+
 	// discard previous plans that might not be relevant anymore
 	ctx.Log.Debug("deleting previous plans and locks")
 	p.deletePlans(ctx)
@@ -160,6 +210,17 @@ func (p *PlanCommandRunner) runAutoplan(ctx *command.Context) {
 	pullStatus, err := p.dbUpdater.updateDB(ctx, ctx.Pull, result.ProjectResults)
 	if err != nil {
 		ctx.Log.Err("writing results: %s", err)
+	}
+
+	// Update layer state and dashboard
+	if layered {
+		p.layerManager.StampAndSaveLayerState(&pullStatus, layerState)
+		if p.database != nil {
+			if err := p.database.UpdateLayerState(pull, layerState); err != nil {
+				ctx.Log.Err("saving layer state: %s", err)
+			}
+		}
+		p.layerManager.UpdateDashboard(ctx, &pullStatus)
 	}
 
 	p.updateCommitStatus(ctx, pullStatus, command.Plan)
@@ -255,6 +316,47 @@ func (p *PlanCommandRunner) run(ctx *command.Context, cmd *CommentCommand) {
 
 	projectCmds, policyCheckCmds := p.partitionProjectCmds(ctx, projectCmds)
 
+	// Layered planning gate for manual plan (non-specific project)
+	layered := false
+	var layerState *models.LayerState
+	layerStateIsNew := false
+	if !cmd.IsForSpecificProject() && p.layerManager != nil && p.layerManager.ShouldActivate(projectCmds) {
+		// Check if there's existing layer state (re-plan or cascade scenario)
+		if p.database != nil {
+			existingStatus, fetchErr := p.database.GetPullStatus(pull)
+			if fetchErr == nil && existingStatus != nil && existingStatus.LayerState != nil {
+				layerState = existingStatus.LayerState
+			}
+		}
+		if layerState == nil {
+			layerState, err = p.layerManager.InitializeLayerState(projectCmds)
+			if err != nil {
+				ctx.Log.Err("layered planning error: %s", err)
+				p.pullUpdater.updatePull(ctx, cmd, command.Result{
+					Error: fmt.Errorf("layered planning error: %w", err),
+				})
+				return
+			}
+			layerStateIsNew = true
+		}
+		if p.layerManager.HasMultipleLayers(layerState) {
+			layered = true
+
+			// Only post the initial dashboard when first creating layer state.
+			// During cascade planning (existing state loaded from DB), the
+			// dashboard was already updated by handleLayerCompletion with the
+			// full project list. Calling PostInitialDashboard here would
+			// overwrite it with a synthetic pullStatus containing only the
+			// current layer's projects, hiding previous layers.
+			if layerStateIsNew {
+				p.layerManager.PostInitialDashboard(ctx, layerState, projectCmds)
+			}
+
+			projectCmds = p.layerManager.FilterToCurrentLayer(projectCmds, layerState)
+			policyCheckCmds = p.layerManager.FilterToCurrentLayer(policyCheckCmds, layerState)
+		}
+	}
+
 	// if the plan is generic, new plans will be generated based on changes
 	// discard previous plans that might not be relevant anymore
 	if !cmd.IsForSpecificProject() {
@@ -290,6 +392,17 @@ func (p *PlanCommandRunner) run(ctx *command.Context, cmd *CommentCommand) {
 		return
 	}
 
+	// Update layer state and dashboard
+	if layered {
+		p.layerManager.StampAndSaveLayerState(&pullStatus, layerState)
+		if p.database != nil {
+			if err := p.database.UpdateLayerState(pull, layerState); err != nil {
+				ctx.Log.Err("saving layer state: %s", err)
+			}
+		}
+		p.layerManager.UpdateDashboard(ctx, &pullStatus)
+	}
+
 	p.updateCommitStatus(ctx, pullStatus, command.Plan)
 	p.updateCommitStatus(ctx, pullStatus, command.Apply)
 
@@ -307,6 +420,141 @@ func (p *PlanCommandRunner) run(ctx *command.Context, cmd *CommentCommand) {
 		if err := p.commitStatusUpdater.UpdateCombinedCount(ctx.Log, baseRepo, pull, models.SuccessCommitStatus, command.PolicyCheck, 0, 0); err != nil {
 			ctx.Log.Warn("unable to update commit status: %s", err)
 		}
+	}
+}
+
+// handleLayeredReplan orchestrates the re-plan flow when a push arrives on a PR
+// with existing layered planning state. It calls HandleNewCommit to classify
+// affected projects and then either:
+//   - Does nothing (all affected projects are in future layers)
+//   - Re-plans only affected projects in the current layer
+//   - Resets layer state and re-plans from the reset layer
+func (p *PlanCommandRunner) handleLayeredReplan(
+	ctx *command.Context,
+	existingStatus *models.PullStatus,
+	allProjectCmds []command.ProjectContext,
+	allPolicyCheckCmds []command.ProjectContext,
+) {
+	pull := ctx.Pull
+	layerState := existingStatus.LayerState
+
+	// Build the list of affected project names from the autoplan commands
+	affectedProjects := make([]string, 0, len(allProjectCmds))
+	for _, cmd := range allProjectCmds {
+		affectedProjects = append(affectedProjects, projectContextKey(cmd))
+	}
+
+	// Determine what action to take
+	action := p.layerManager.stateManager.HandleNewCommit(existingStatus, affectedProjects)
+
+	if action.NoAction {
+		ctx.Log.Info("push affects only future-layer projects; no re-plan needed")
+		return
+	}
+
+	var projectCmds []command.ProjectContext
+	var policyCheckCmds []command.ProjectContext
+
+	if action.ResetToLayer >= 0 {
+		// Reset layer state and re-plan from the reset layer
+		ctx.Log.Info("resetting layer state to layer %d", action.ResetToLayer)
+
+		if err := p.layerManager.stateManager.ResetLayerState(layerState, action.ResetToLayer); err != nil {
+			ctx.Log.Err("resetting layer state: %s", err)
+			p.pullUpdater.updatePull(ctx, AutoplanCommand{}, command.Result{
+				Error: fmt.Errorf("resetting layer state: %w", err),
+			})
+			return
+		}
+
+		// Re-initialize the layer state from the reset point.
+		// This re-computes layer assignments for the pending projects.
+		freshState, err := p.layerManager.InitializeLayerState(allProjectCmds)
+		if err != nil {
+			ctx.Log.Err("re-initializing layer state after reset: %s", err)
+			p.pullUpdater.updatePull(ctx, AutoplanCommand{}, command.Result{
+				Error: fmt.Errorf("re-initializing layer state after reset: %w", err),
+			})
+			return
+		}
+		layerState = freshState
+
+		// Filter to current layer (the reset-to layer)
+		projectCmds = p.layerManager.FilterToCurrentLayer(allProjectCmds, layerState)
+		policyCheckCmds = p.layerManager.FilterToCurrentLayer(allPolicyCheckCmds, layerState)
+
+		ctx.Log.Info("re-planning layer %d (%d projects)", layerState.CurrentLayer, len(projectCmds))
+	} else {
+		// Re-plan only affected projects in the current layer
+		replanSet := make(map[string]bool, len(action.ReplanProjects))
+		for _, name := range action.ReplanProjects {
+			replanSet[name] = true
+		}
+
+		for _, cmd := range allProjectCmds {
+			if replanSet[projectContextKey(cmd)] {
+				projectCmds = append(projectCmds, cmd)
+			}
+		}
+		for _, cmd := range allPolicyCheckCmds {
+			if replanSet[projectContextKey(cmd)] {
+				policyCheckCmds = append(policyCheckCmds, cmd)
+			}
+		}
+
+		ctx.Log.Info("re-planning %d projects in current layer %d", len(projectCmds), layerState.CurrentLayer)
+	}
+
+	if len(projectCmds) == 0 {
+		ctx.Log.Info("no projects to re-plan after filtering")
+		return
+	}
+
+	// Delete previous plans and locks for this pull
+	ctx.Log.Debug("deleting previous plans and locks for re-plan")
+	p.deletePlans(ctx)
+	_, err := p.lockingLocker.UnlockByPull(pull.BaseRepo.FullName, pull.Num)
+	if err != nil {
+		ctx.Log.Err("deleting locks: %s", err)
+	}
+
+	// Run the plans
+	result := runProjectCmdsWithCancellationTracker(ctx, projectCmds, p.cancellationTracker, p.parallelPoolSize, p.isParallelEnabled(projectCmds), p.prjCmdRunner.Plan)
+
+	if p.autoMerger.automergeEnabled(projectCmds) && result.HasErrors() {
+		ctx.Log.Info("deleting plans because there were errors and automerge requires all plans succeed")
+		p.deletePlans(ctx)
+		_, err := p.lockingLocker.UnlockByPull(pull.BaseRepo.FullName, pull.Num)
+		if err != nil {
+			ctx.Log.Err("deleting locks: %s", err)
+		}
+		result.PlansDeleted = true
+	}
+
+	p.pullUpdater.updatePull(ctx, AutoplanCommand{}, result)
+
+	pullStatus, err := p.dbUpdater.updateDB(ctx, pull, result.ProjectResults)
+	if err != nil {
+		ctx.Log.Err("writing results: %s", err)
+	}
+
+	// Update layer state and dashboard
+	p.layerManager.StampAndSaveLayerState(&pullStatus, layerState)
+	if p.database != nil {
+		if err := p.database.UpdateLayerState(pull, layerState); err != nil {
+			ctx.Log.Err("saving layer state: %s", err)
+		}
+	}
+	p.layerManager.UpdateDashboard(ctx, &pullStatus)
+
+	p.updateCommitStatus(ctx, pullStatus, command.Plan)
+	p.updateCommitStatus(ctx, pullStatus, command.Apply)
+
+	// Run policy checks if plans succeeded
+	if len(policyCheckCmds) > 0 && !result.HasErrors() && !result.PlansDeleted {
+		ctx.Log.Info("running policy_checks for re-planned projects")
+		ctx.PullStatus = &pullStatus
+		p.policyCheckCommandRunner.Run(ctx, policyCheckCmds)
 	}
 }
 
@@ -335,7 +583,7 @@ func (p *PlanCommandRunner) updateCommitStatus(ctx *command.Context, pullStatus 
 			status = models.FailedCommitStatus
 		}
 	case command.Apply:
-		numSuccess = pullStatus.StatusCount(models.AppliedPlanStatus) + pullStatus.StatusCount(models.PlannedNoChangesPlanStatus)
+		numSuccess = pullStatus.StatusCount(models.AppliedStatus) + pullStatus.StatusCount(models.PlannedNoChangesPlanStatus)
 		numErrored = pullStatus.StatusCount(models.ErroredApplyStatus)
 
 		if numErrored > 0 {
