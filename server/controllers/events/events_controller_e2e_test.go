@@ -1572,6 +1572,8 @@ func setupE2E(t *testing.T, repoDir string, opt setupOption) (events_controllers
 		discardApprovalOnPlan,
 		e2ePullReqStatusFetcher,
 		false,
+		nil, // layerManager
+		database,
 	)
 
 	applyCommandRunner := events.NewApplyCommandRunner(
@@ -1590,6 +1592,8 @@ func setupE2E(t *testing.T, repoDir string, opt setupOption) (events_controllers
 		silenceNoProjects,
 		false,
 		e2ePullReqStatusFetcher,
+		nil, // layerManager
+		planCommandRunner,
 	)
 
 	approvePoliciesCommandRunner := events.NewApprovePoliciesCommandRunner(

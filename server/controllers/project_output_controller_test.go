@@ -82,6 +82,9 @@ func (m *mockProjectOutputDB) Close() error                                     
 func (m *mockProjectOutputDB) GetProjectOutputByJobID(jobID string) (*models.ProjectOutput, error) {
 	return nil, nil
 }
+func (m *mockProjectOutputDB) UpdateLayerState(_ models.PullRequest, _ *models.LayerState) error {
+	return nil
+}
 
 func TestProjectOutputController_ProjectOutput_Success(t *testing.T) {
 	now := time.Now()

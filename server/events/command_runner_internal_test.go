@@ -28,7 +28,7 @@ func TestApplyUpdateCommitStatus(t *testing.T) {
 						Status: models.PlannedPlanStatus,
 					},
 					{
-						Status: models.AppliedPlanStatus,
+						Status: models.AppliedStatus,
 					},
 				},
 			},
@@ -41,10 +41,10 @@ func TestApplyUpdateCommitStatus(t *testing.T) {
 			pullStatus: models.PullStatus{
 				Projects: []models.ProjectStatus{
 					{
-						Status: models.AppliedPlanStatus,
+						Status: models.AppliedStatus,
 					},
 					{
-						Status: models.AppliedPlanStatus,
+						Status: models.AppliedStatus,
 					},
 				},
 			},
@@ -57,7 +57,7 @@ func TestApplyUpdateCommitStatus(t *testing.T) {
 			pullStatus: models.PullStatus{
 				Projects: []models.ProjectStatus{
 					{
-						Status: models.AppliedPlanStatus,
+						Status: models.AppliedStatus,
 					},
 					{
 						Status: models.ErroredApplyStatus,
@@ -76,7 +76,7 @@ func TestApplyUpdateCommitStatus(t *testing.T) {
 			pullStatus: models.PullStatus{
 				Projects: []models.ProjectStatus{
 					{
-						Status: models.AppliedPlanStatus,
+						Status: models.AppliedStatus,
 					},
 					{
 						Status: models.PlannedNoChangesPlanStatus,
@@ -138,7 +138,7 @@ func TestPlanUpdatePlanCommitStatus(t *testing.T) {
 						Status: models.PlannedPlanStatus,
 					},
 					{
-						Status: models.AppliedPlanStatus,
+						Status: models.AppliedStatus,
 					},
 					{
 						Status: models.ErroredApplyStatus,
@@ -215,7 +215,7 @@ func TestPlanUpdateApplyCommitStatus(t *testing.T) {
 						Status: models.PlannedNoChangesPlanStatus,
 					},
 					{
-						Status: models.AppliedPlanStatus,
+						Status: models.AppliedStatus,
 					},
 					{
 						Status: models.PlannedPlanStatus,
@@ -232,7 +232,7 @@ func TestPlanUpdateApplyCommitStatus(t *testing.T) {
 						Status: models.PlannedNoChangesPlanStatus,
 					},
 					{
-						Status: models.AppliedPlanStatus,
+						Status: models.AppliedStatus,
 					},
 					{
 						Status: models.ErroredApplyStatus,

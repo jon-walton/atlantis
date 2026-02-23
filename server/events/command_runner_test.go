@@ -171,6 +171,8 @@ func setup(t *testing.T, options ...func(testConfig *TestConfig)) *vcsmocks.Mock
 		testConfig.discardApprovalOnPlan,
 		pullReqStatusFetcher,
 		testConfig.PendingApplyStatus,
+		nil, // layerManager
+		testConfig.database,
 	)
 
 	applyCommandRunner = events.NewApplyCommandRunner(
@@ -189,6 +191,8 @@ func setup(t *testing.T, options ...func(testConfig *TestConfig)) *vcsmocks.Mock
 		testConfig.SilenceNoProjects,
 		testConfig.silenceVCSStatusNoProjects,
 		pullReqStatusFetcher,
+		nil, // layerManager
+		planCommandRunner,
 	)
 
 	approvePoliciesCommandRunner = events.NewApprovePoliciesCommandRunner(
