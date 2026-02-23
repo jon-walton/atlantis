@@ -611,7 +611,7 @@ func TestPullStatus_StatusCount(t *testing.T) {
 				Status: models.PlannedPlanStatus,
 			},
 			{
-				Status: models.AppliedPlanStatus,
+				Status: models.AppliedStatus,
 			},
 			{
 				Status: models.ErroredApplyStatus,
@@ -629,7 +629,7 @@ func TestPullStatus_StatusCount(t *testing.T) {
 	}
 
 	Equals(t, 2, ps.StatusCount(models.PlannedPlanStatus))
-	Equals(t, 1, ps.StatusCount(models.AppliedPlanStatus))
+	Equals(t, 1, ps.StatusCount(models.AppliedStatus))
 	Equals(t, 1, ps.StatusCount(models.ErroredApplyStatus))
 	Equals(t, 0, ps.StatusCount(models.ErroredPlanStatus))
 	Equals(t, 1, ps.StatusCount(models.DiscardedPlanStatus))

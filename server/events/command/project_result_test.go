@@ -134,7 +134,7 @@ func TestProjectResult_PlanStatus(t *testing.T) {
 					ApplySuccess: "success",
 				},
 			},
-			expStatus: models.AppliedPlanStatus,
+			expStatus: models.AppliedStatus,
 		},
 		{
 			p: command.ProjectResult{

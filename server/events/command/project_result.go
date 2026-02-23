@@ -83,7 +83,7 @@ func (p ProjectResult) PlanStatus() models.ProjectPlanStatus {
 		} else if p.Failure != "" {
 			return models.ErroredApplyStatus
 		}
-		return models.AppliedPlanStatus
+		return models.AppliedStatus
 	}
 
 	panic("PlanStatus() missing a combination")

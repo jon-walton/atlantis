@@ -553,6 +553,41 @@ type PullStatus struct {
 	Projects []ProjectStatus
 	// Pull is the original pull request model.
 	Pull PullRequest
+	// LayerState tracks layered planning state. Nil when layered planning is not active.
+	LayerState *LayerState `json:"layer_state,omitempty"`
+}
+
+// LayerState tracks the layered planning state for a pull request.
+// It is only populated when layered planning is active (i.e., at least
+// one in-scope project has depends_on configured).
+type LayerState struct {
+	// Enabled is true when layered planning is active for this PR.
+	Enabled bool `json:"enabled"`
+
+	// CurrentLayer is the layer index currently being planned/applied.
+	// Starts at 0. A value of -1 means all layers are complete.
+	CurrentLayer int `json:"current_layer"`
+
+	// TotalLayers is the total number of known layers. This may grow as
+	// cascade evaluation discovers new in-scope projects in later layers.
+	TotalLayers int `json:"total_layers"`
+
+	// DependencyGraph maps project name -> list of project names it depends on.
+	// This is the full graph for all in-scope projects, used for cascade evaluation.
+	DependencyGraph map[string][]string `json:"dependency_graph"`
+
+	// ProjectLayers maps project name -> layer index for all in-scope projects.
+	// Projects not yet assigned a layer (pending cascade evaluation) are absent.
+	ProjectLayers map[string]int `json:"project_layers"`
+
+	// PendingProjects lists project names that are known dependents but have not
+	// yet been assigned to a layer (waiting for upstream plan results to determine
+	// if they need to cascade).
+	PendingProjects []string `json:"pending_projects,omitempty"`
+
+	// SkippedUpstreams maps project name -> true for projects that were skipped.
+	// Their downstream dependents will be excluded from future layers.
+	SkippedUpstreams map[string]bool `json:"skipped_upstreams,omitempty"`
 }
 
 // StatusCount returns the number of projects that have status.
@@ -575,6 +610,9 @@ type ProjectStatus struct {
 	PolicyStatus []PolicySetStatus
 	// Status is the status of where this project is at in the planning cycle.
 	Status ProjectPlanStatus
+	// Layer is which layer this project belongs to. Only meaningful when
+	// PullStatus.LayerState is non-nil.
+	Layer int `json:"layer,omitempty"`
 }
 
 // ProjectPlanStatus is the status of where this project is at in the planning
@@ -582,21 +620,26 @@ type ProjectStatus struct {
 type ProjectPlanStatus int
 
 const (
+	// PendingPlanStatus is the zero value — the project has not yet been
+	// planned. Used as the initial state for newly-discovered projects.
+	PendingPlanStatus ProjectPlanStatus = iota
 	// ErroredPlanStatus means that this plan has an error or the apply has an
 	// error.
-	ErroredPlanStatus ProjectPlanStatus = iota
+	ErroredPlanStatus
 	// PlannedPlanStatus means that a plan has been successfully generated but
 	// not yet applied.
 	PlannedPlanStatus
 	// PlannedNoChangesPlanStatus means that a plan has been successfully
 	// generated with "No changes" and not yet applied.
 	PlannedNoChangesPlanStatus
+	// ApplyingStatus means that the plan is currently being applied.
+	ApplyingStatus
 	// ErroredApplyStatus means that a plan has been generated but there was an
 	// error while applying it.
 	ErroredApplyStatus
-	// AppliedPlanStatus means that a plan has been generated and applied
+	// AppliedStatus means that a plan has been generated and applied
 	// successfully.
-	AppliedPlanStatus
+	AppliedStatus
 	// DiscardedPlanStatus means that there was an unapplied plan that was
 	// discarded due to a project being unlocked
 	DiscardedPlanStatus
@@ -606,20 +649,26 @@ const (
 	// PassedPolicyCheckStatus means that there was an unapplied plan that was
 	// discarded due to a project being unlocked
 	PassedPolicyCheckStatus
+	// SkippedPlanStatus means that the project was skipped via `atlantis apply -skip`.
+	SkippedPlanStatus
 )
 
 // String returns a string representation of the status.
 func (p ProjectPlanStatus) String() string {
 	switch p {
+	case PendingPlanStatus:
+		return "pending"
 	case ErroredPlanStatus:
 		return "plan_errored"
 	case PlannedPlanStatus:
 		return "planned"
 	case PlannedNoChangesPlanStatus:
 		return "planned_no_changes"
+	case ApplyingStatus:
+		return "applying"
 	case ErroredApplyStatus:
 		return "apply_errored"
-	case AppliedPlanStatus:
+	case AppliedStatus:
 		return "applied"
 	case DiscardedPlanStatus:
 		return "plan_discarded"
@@ -627,6 +676,8 @@ func (p ProjectPlanStatus) String() string {
 		return "policy_check_errored"
 	case PassedPolicyCheckStatus:
 		return "policy_check_passed"
+	case SkippedPlanStatus:
+		return "skipped"
 	default:
 		panic("missing String() impl for ProjectPlanStatus")
 	}

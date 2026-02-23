@@ -250,7 +250,7 @@ func TestRequirements_ValidateProjectDependencies(t *testing.T) {
 					Projects: []models.ProjectStatus{
 						{
 							ProjectName: "project1",
-							Status:      models.AppliedPlanStatus,
+							Status:      models.AppliedStatus,
 						},
 					},
 				},
@@ -285,7 +285,7 @@ func TestRequirements_ValidateProjectDependencies(t *testing.T) {
 					Projects: []models.ProjectStatus{
 						{
 							ProjectName: "project1",
-							Status:      models.AppliedPlanStatus,
+							Status:      models.AppliedStatus,
 						},
 						{
 							ProjectName: "project2",
@@ -305,7 +305,7 @@ func TestRequirements_ValidateProjectDependencies(t *testing.T) {
 					Projects: []models.ProjectStatus{
 						{
 							ProjectName: "project1",
-							Status:      models.AppliedPlanStatus,
+							Status:      models.AppliedStatus,
 						},
 						{
 							ProjectName: "project2",
@@ -324,7 +324,7 @@ func TestRequirements_ValidateProjectDependencies(t *testing.T) {
 					Projects: []models.ProjectStatus{
 						{
 							ProjectName: "project1",
-							Status:      models.AppliedPlanStatus,
+							Status:      models.AppliedStatus,
 						},
 						{
 							ProjectName: "project2",

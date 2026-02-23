@@ -19,7 +19,7 @@ type AutoMerger struct {
 func (c *AutoMerger) automerge(ctx *command.Context, pullStatus models.PullStatus, deleteSourceBranchOnMerge bool, mergeMethod string) {
 	// We only automerge if all projects have been successfully applied.
 	for _, p := range pullStatus.Projects {
-		if p.Status != models.AppliedPlanStatus {
+		if p.Status != models.AppliedStatus {
 			ctx.Log.Info("not automerging because project at dir %q, workspace %q has status %q", p.RepoRelDir, p.Workspace, p.Status.String())
 			return
 		}
