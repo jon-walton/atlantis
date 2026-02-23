@@ -164,6 +164,8 @@ var testFlags = map[string]any{
 	DisableAutoplanFlag:              true,
 	DisableAutoplanLabelFlag:         "no-auto-plan",
 	DisableUnlockLabelFlag:           "do-not-unlock",
+	EnableLayeredApplySkipFlag:       false,
+	EnableLayeredPlanningFlag:        false,
 	EnablePolicyChecksFlag:           false,
 	EnableRegExpCmdFlag:              false,
 	EnableDiffMarkdownFormat:         false,

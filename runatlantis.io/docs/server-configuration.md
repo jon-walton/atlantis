@@ -560,6 +560,26 @@ Enable Atlantis to format Terraform plan output into a markdown-diff friendly fo
 
 Useful to enable for use with GitHub.
 
+### `--enable-layered-apply-skip`
+
+```bash
+atlantis server --enable-layered-apply-skip
+# or
+ATLANTIS_ENABLE_LAYERED_APPLY_SKIP=true
+```
+
+Enable the `atlantis apply -skip` command to skip failed applies in the current layer. Requires `--enable-layered-planning` to also be set.
+
+### `--enable-layered-planning`
+
+```bash
+atlantis server --enable-layered-planning
+# or
+ATLANTIS_ENABLE_LAYERED_PLANNING=true
+```
+
+Enable layered plan/apply workflow for repositories with `depends_on` configured. When enabled, projects are planned and applied in dependency order across layers.
+
 ### `--enable-policy-checks` <Badge text="v0.17.0" type="info"/>
 
 ```bash

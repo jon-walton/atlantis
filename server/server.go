@@ -61,6 +61,7 @@ import (
 	"github.com/runatlantis/atlantis/server/core/terraform"
 	"github.com/runatlantis/atlantis/server/events"
 	"github.com/runatlantis/atlantis/server/events/command"
+	"github.com/runatlantis/atlantis/server/events/layers"
 	"github.com/runatlantis/atlantis/server/events/models"
 	"github.com/runatlantis/atlantis/server/events/vcs"
 	"github.com/runatlantis/atlantis/server/events/vcs/azuredevops"
@@ -196,6 +197,10 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 	var bitbucketServerClient *bitbucketserver.Client
 	var azuredevopsClient *azuredevops.Client
 	var giteaClient *gitea.Client
+
+	if userConfig.EnableLayeredApplySkip && !userConfig.EnableLayeredPlanning {
+		return nil, fmt.Errorf("--enable-layered-apply-skip requires --enable-layered-planning to also be set")
+	}
 
 	policyChecksEnabled := false
 	if userConfig.EnablePolicyChecksFlag {
@@ -612,6 +617,7 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 		userConfig.AzureDevopsUser,
 		userConfig.ExecutableName,
 		allowCommands,
+		userConfig.EnableLayeredApplySkip,
 	)
 	defaultTfDistribution := terraformClient.DefaultDistribution()
 	defaultTfVersion := terraformClient.DefaultVersion()
@@ -783,6 +789,15 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 	)
 
 	pullReqStatusFetcher := vcs.NewPullReqStatusFetcher(vcsClient, userConfig.VCSStatusName, strings.Split(userConfig.IgnoreVCSStatusNames, ","))
+
+	// Create layered planning components (nil when disabled)
+	var layerManager *events.LayerManager
+	if userConfig.EnableLayeredPlanning {
+		layerStateManager := events.NewLayerStateManager()
+		dashboardUpdater := layers.NewDashboardUpdater(vcsClient, userConfig.MarkdownTemplateOverridesDir)
+		layerManager = events.NewLayerManager(layerStateManager, dashboardUpdater)
+	}
+
 	planCommandRunner := events.NewPlanCommandRunner(
 		userConfig.SilenceVCSStatusNoPlans,
 		userConfig.SilenceVCSStatusNoProjects,
@@ -804,6 +819,8 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 		userConfig.DiscardApprovalOnPlanFlag,
 		pullReqStatusFetcher,
 		userConfig.PendingApplyStatus,
+		layerManager,
+		database,
 	)
 
 	applyCommandRunner := events.NewApplyCommandRunner(
@@ -822,6 +839,8 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 		userConfig.SilenceNoProjects,
 		userConfig.SilenceVCSStatusNoProjects,
 		pullReqStatusFetcher,
+		layerManager,
+		planCommandRunner,
 	)
 
 	approvePoliciesCommandRunner := events.NewApprovePoliciesCommandRunner(

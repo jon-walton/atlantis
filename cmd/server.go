@@ -85,6 +85,8 @@ const (
 	DiscardApprovalOnPlanFlag        = "discard-approval-on-plan"
 	EmojiReaction                    = "emoji-reaction"
 	EnableDiffMarkdownFormat         = "enable-diff-markdown-format"
+	EnableLayeredApplySkipFlag       = "enable-layered-apply-skip"
+	EnableLayeredPlanningFlag        = "enable-layered-planning"
 	EnablePolicyChecksFlag           = "enable-policy-checks"
 	EnableRegExpCmdFlag              = "enable-regexp-cmd"
 	EnableProfilingAPI               = "enable-profiling-api"
@@ -543,6 +545,14 @@ var boolFlags = map[string]boolFlag{
 	},
 	EnableDiffMarkdownFormat: {
 		description:  "Enable Atlantis to format Terraform plan output into a markdown-diff friendly format for color-coding purposes.",
+		defaultValue: false,
+	},
+	EnableLayeredApplySkipFlag: {
+		description:  "Enable the 'atlantis apply -skip' command to skip failed applies in the current layer. Requires enable-layered-planning to also be set.",
+		defaultValue: false,
+	},
+	EnableLayeredPlanningFlag: {
+		description:  "Enable layered plan/apply workflow for repositories with depends_on configured. When enabled, projects are planned and applied in dependency order across layers.",
 		defaultValue: false,
 	},
 	FailOnPreWorkflowHookError: {
