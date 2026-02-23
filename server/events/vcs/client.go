@@ -20,12 +20,29 @@ import (
 
 //go:generate pegomock generate --package mocks -o mocks/mock_client.go github.com/runatlantis/atlantis/server/events/vcs Client
 
+// PullComment represents a comment on a pull request.
+type PullComment struct {
+	ID     int64
+	Body   string
+	Author string
+}
+
 // Client is used to make API calls to a VCS host like GitHub or GitLab.
 type Client interface {
 	// GetModifiedFiles returns the names of files that were modified in the merge request
 	// relative to the repo root, e.g. parent/child/file.txt.
 	GetModifiedFiles(logger logging.SimpleLogging, repo models.Repo, pull models.PullRequest) ([]string, error)
 	CreateComment(logger logging.SimpleLogging, repo models.Repo, pullNum int, comment string, command string) error
+
+	// ListComments returns all comments on a pull request.
+	ListComments(logger logging.SimpleLogging, repo models.Repo, pullNum int) ([]PullComment, error)
+
+	// EditComment updates the body of an existing comment by its ID.
+	EditComment(logger logging.SimpleLogging, repo models.Repo, pullNum int, commentID int64, body string) error
+
+	// MaxCommentLength returns the maximum number of characters allowed
+	// in a single comment for this VCS provider. Returns 0 if unlimited.
+	MaxCommentLength() int
 
 	ReactToComment(logger logging.SimpleLogging, repo models.Repo, pullNum int, commentID int64, reaction string) error
 	HidePrevCommandComments(logger logging.SimpleLogging, repo models.Repo, pullNum int, command string, dir string) error

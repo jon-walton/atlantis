@@ -6,6 +6,7 @@ package mocks
 import (
 	pegomock "github.com/petergtz/pegomock/v4"
 	models "github.com/runatlantis/atlantis/server/events/models"
+	vcs "github.com/runatlantis/atlantis/server/events/vcs"
 	logging "github.com/runatlantis/atlantis/server/logging"
 	"reflect"
 	"time"
@@ -47,6 +48,21 @@ func (mock *MockClient) DiscardReviews(logger logging.SimpleLogging, repo models
 	}
 	_params := []pegomock.Param{logger, repo, pull}
 	_result := pegomock.GetGenericMockFrom(mock).Invoke("DiscardReviews", _params, []reflect.Type{reflect.TypeOf((*error)(nil)).Elem()})
+	var _ret0 error
+	if len(_result) != 0 {
+		if _result[0] != nil {
+			_ret0 = _result[0].(error)
+		}
+	}
+	return _ret0
+}
+
+func (mock *MockClient) EditComment(logger logging.SimpleLogging, repo models.Repo, pullNum int, commentID int64, body string) error {
+	if mock == nil {
+		panic("mock must not be nil. Use myMock := NewMockClient().")
+	}
+	_params := []pegomock.Param{logger, repo, pullNum, commentID, body}
+	_result := pegomock.GetGenericMockFrom(mock).Invoke("EditComment", _params, []reflect.Type{reflect.TypeOf((*error)(nil)).Elem()})
 	var _ret0 error
 	if len(_result) != 0 {
 		if _result[0] != nil {
@@ -170,6 +186,25 @@ func (mock *MockClient) HidePrevCommandComments(logger logging.SimpleLogging, re
 	return _ret0
 }
 
+func (mock *MockClient) ListComments(logger logging.SimpleLogging, repo models.Repo, pullNum int) ([]vcs.PullComment, error) {
+	if mock == nil {
+		panic("mock must not be nil. Use myMock := NewMockClient().")
+	}
+	_params := []pegomock.Param{logger, repo, pullNum}
+	_result := pegomock.GetGenericMockFrom(mock).Invoke("ListComments", _params, []reflect.Type{reflect.TypeOf((*[]vcs.PullComment)(nil)).Elem(), reflect.TypeOf((*error)(nil)).Elem()})
+	var _ret0 []vcs.PullComment
+	var _ret1 error
+	if len(_result) != 0 {
+		if _result[0] != nil {
+			_ret0 = _result[0].([]vcs.PullComment)
+		}
+		if _result[1] != nil {
+			_ret1 = _result[1].(error)
+		}
+	}
+	return _ret0, _ret1
+}
+
 func (mock *MockClient) MarkdownPullLink(pull models.PullRequest) (string, error) {
 	if mock == nil {
 		panic("mock must not be nil. Use myMock := NewMockClient().")
@@ -187,6 +222,21 @@ func (mock *MockClient) MarkdownPullLink(pull models.PullRequest) (string, error
 		}
 	}
 	return _ret0, _ret1
+}
+
+func (mock *MockClient) MaxCommentLength() int {
+	if mock == nil {
+		panic("mock must not be nil. Use myMock := NewMockClient().")
+	}
+	_params := []pegomock.Param{}
+	_result := pegomock.GetGenericMockFrom(mock).Invoke("MaxCommentLength", _params, []reflect.Type{reflect.TypeOf((*int)(nil)).Elem()})
+	var _ret0 int
+	if len(_result) != 0 {
+		if _result[0] != nil {
+			_ret0 = _result[0].(int)
+		}
+	}
+	return _ret0
 }
 
 func (mock *MockClient) MergePull(logger logging.SimpleLogging, pull models.PullRequest, pullOptions models.PullRequestOptions) error {
@@ -412,6 +462,59 @@ func (c *MockClient_DiscardReviews_OngoingVerification) GetAllCapturedArguments(
 			_param2 = make([]models.PullRequest, len(c.methodInvocations))
 			for u, param := range _params[2] {
 				_param2[u] = param.(models.PullRequest)
+			}
+		}
+	}
+	return
+}
+
+func (verifier *VerifierMockClient) EditComment(logger logging.SimpleLogging, repo models.Repo, pullNum int, commentID int64, body string) *MockClient_EditComment_OngoingVerification {
+	_params := []pegomock.Param{logger, repo, pullNum, commentID, body}
+	methodInvocations := pegomock.GetGenericMockFrom(verifier.mock).Verify(verifier.inOrderContext, verifier.invocationCountMatcher, "EditComment", _params, verifier.timeout)
+	return &MockClient_EditComment_OngoingVerification{mock: verifier.mock, methodInvocations: methodInvocations}
+}
+
+type MockClient_EditComment_OngoingVerification struct {
+	mock              *MockClient
+	methodInvocations []pegomock.MethodInvocation
+}
+
+func (c *MockClient_EditComment_OngoingVerification) GetCapturedArguments() (logging.SimpleLogging, models.Repo, int, int64, string) {
+	logger, repo, pullNum, commentID, body := c.GetAllCapturedArguments()
+	return logger[len(logger)-1], repo[len(repo)-1], pullNum[len(pullNum)-1], commentID[len(commentID)-1], body[len(body)-1]
+}
+
+func (c *MockClient_EditComment_OngoingVerification) GetAllCapturedArguments() (_param0 []logging.SimpleLogging, _param1 []models.Repo, _param2 []int, _param3 []int64, _param4 []string) {
+	_params := pegomock.GetGenericMockFrom(c.mock).GetInvocationParams(c.methodInvocations)
+	if len(_params) > 0 {
+		if len(_params) > 0 {
+			_param0 = make([]logging.SimpleLogging, len(c.methodInvocations))
+			for u, param := range _params[0] {
+				_param0[u] = param.(logging.SimpleLogging)
+			}
+		}
+		if len(_params) > 1 {
+			_param1 = make([]models.Repo, len(c.methodInvocations))
+			for u, param := range _params[1] {
+				_param1[u] = param.(models.Repo)
+			}
+		}
+		if len(_params) > 2 {
+			_param2 = make([]int, len(c.methodInvocations))
+			for u, param := range _params[2] {
+				_param2[u] = param.(int)
+			}
+		}
+		if len(_params) > 3 {
+			_param3 = make([]int64, len(c.methodInvocations))
+			for u, param := range _params[3] {
+				_param3[u] = param.(int64)
+			}
+		}
+		if len(_params) > 4 {
+			_param4 = make([]string, len(c.methodInvocations))
+			for u, param := range _params[4] {
+				_param4[u] = param.(string)
 			}
 		}
 	}
@@ -682,6 +785,47 @@ func (c *MockClient_HidePrevCommandComments_OngoingVerification) GetAllCapturedA
 	return
 }
 
+func (verifier *VerifierMockClient) ListComments(logger logging.SimpleLogging, repo models.Repo, pullNum int) *MockClient_ListComments_OngoingVerification {
+	_params := []pegomock.Param{logger, repo, pullNum}
+	methodInvocations := pegomock.GetGenericMockFrom(verifier.mock).Verify(verifier.inOrderContext, verifier.invocationCountMatcher, "ListComments", _params, verifier.timeout)
+	return &MockClient_ListComments_OngoingVerification{mock: verifier.mock, methodInvocations: methodInvocations}
+}
+
+type MockClient_ListComments_OngoingVerification struct {
+	mock              *MockClient
+	methodInvocations []pegomock.MethodInvocation
+}
+
+func (c *MockClient_ListComments_OngoingVerification) GetCapturedArguments() (logging.SimpleLogging, models.Repo, int) {
+	logger, repo, pullNum := c.GetAllCapturedArguments()
+	return logger[len(logger)-1], repo[len(repo)-1], pullNum[len(pullNum)-1]
+}
+
+func (c *MockClient_ListComments_OngoingVerification) GetAllCapturedArguments() (_param0 []logging.SimpleLogging, _param1 []models.Repo, _param2 []int) {
+	_params := pegomock.GetGenericMockFrom(c.mock).GetInvocationParams(c.methodInvocations)
+	if len(_params) > 0 {
+		if len(_params) > 0 {
+			_param0 = make([]logging.SimpleLogging, len(c.methodInvocations))
+			for u, param := range _params[0] {
+				_param0[u] = param.(logging.SimpleLogging)
+			}
+		}
+		if len(_params) > 1 {
+			_param1 = make([]models.Repo, len(c.methodInvocations))
+			for u, param := range _params[1] {
+				_param1[u] = param.(models.Repo)
+			}
+		}
+		if len(_params) > 2 {
+			_param2 = make([]int, len(c.methodInvocations))
+			for u, param := range _params[2] {
+				_param2[u] = param.(int)
+			}
+		}
+	}
+	return
+}
+
 func (verifier *VerifierMockClient) MarkdownPullLink(pull models.PullRequest) *MockClient_MarkdownPullLink_OngoingVerification {
 	_params := []pegomock.Param{pull}
 	methodInvocations := pegomock.GetGenericMockFrom(verifier.mock).Verify(verifier.inOrderContext, verifier.invocationCountMatcher, "MarkdownPullLink", _params, verifier.timeout)
@@ -709,6 +853,23 @@ func (c *MockClient_MarkdownPullLink_OngoingVerification) GetAllCapturedArgument
 		}
 	}
 	return
+}
+
+func (verifier *VerifierMockClient) MaxCommentLength() *MockClient_MaxCommentLength_OngoingVerification {
+	_params := []pegomock.Param{}
+	methodInvocations := pegomock.GetGenericMockFrom(verifier.mock).Verify(verifier.inOrderContext, verifier.invocationCountMatcher, "MaxCommentLength", _params, verifier.timeout)
+	return &MockClient_MaxCommentLength_OngoingVerification{mock: verifier.mock, methodInvocations: methodInvocations}
+}
+
+type MockClient_MaxCommentLength_OngoingVerification struct {
+	mock              *MockClient
+	methodInvocations []pegomock.MethodInvocation
+}
+
+func (c *MockClient_MaxCommentLength_OngoingVerification) GetCapturedArguments() {
+}
+
+func (c *MockClient_MaxCommentLength_OngoingVerification) GetAllCapturedArguments() {
 }
 
 func (verifier *VerifierMockClient) MergePull(logger logging.SimpleLogging, pull models.PullRequest, pullOptions models.PullRequestOptions) *MockClient_MergePull_OngoingVerification {

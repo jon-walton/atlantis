@@ -191,6 +191,48 @@ func (c *InstrumentedClient) MergePull(logger logging.SimpleLogging, pull models
 	return nil
 }
 
+func (c *InstrumentedClient) ListComments(logger logging.SimpleLogging, repo models.Repo, pullNum int) ([]vcs.PullComment, error) {
+	scope := c.StatsScope.SubScope("list_comments")
+	scope = SetGitScopeTags(scope, repo.FullName, pullNum)
+
+	executionTime := scope.Timer(metrics.ExecutionTimeMetric).Start()
+	defer executionTime.Stop()
+
+	executionSuccess := scope.Counter(metrics.ExecutionSuccessMetric)
+	executionError := scope.Counter(metrics.ExecutionErrorMetric)
+
+	comments, err := c.Client.ListComments(logger, repo, pullNum)
+
+	if err != nil {
+		executionError.Inc(1)
+		logger.Err("Unable to list comments, error: %s", err.Error())
+	} else {
+		executionSuccess.Inc(1)
+	}
+
+	return comments, err
+}
+
+func (c *InstrumentedClient) EditComment(logger logging.SimpleLogging, repo models.Repo, pullNum int, commentID int64, body string) error {
+	scope := c.StatsScope.SubScope("edit_comment")
+	scope = SetGitScopeTags(scope, repo.FullName, pullNum)
+
+	executionTime := scope.Timer(metrics.ExecutionTimeMetric).Start()
+	defer executionTime.Stop()
+
+	executionSuccess := scope.Counter(metrics.ExecutionSuccessMetric)
+	executionError := scope.Counter(metrics.ExecutionErrorMetric)
+
+	if err := c.Client.EditComment(logger, repo, pullNum, commentID, body); err != nil {
+		executionError.Inc(1)
+		logger.Err("Unable to edit comment %d, error: %s", commentID, err.Error())
+		return err
+	}
+
+	executionSuccess.Inc(1)
+	return nil
+}
+
 func SetGitScopeTags(scope tally.Scope, repoFullName string, pullNum int) tally.Scope {
 	return scope.Tagged(map[string]string{
 		"base_repo": repoFullName,

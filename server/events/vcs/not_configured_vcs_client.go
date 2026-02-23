@@ -78,3 +78,15 @@ func (a *NotConfiguredVCSClient) GetCloneURL(_ logging.SimpleLogging, _ models.V
 func (a *NotConfiguredVCSClient) GetPullLabels(_ logging.SimpleLogging, _ models.Repo, _ models.PullRequest) ([]string, error) {
 	return nil, a.err()
 }
+
+func (a *NotConfiguredVCSClient) ListComments(_ logging.SimpleLogging, _ models.Repo, _ int) ([]PullComment, error) {
+	return nil, a.err()
+}
+
+func (a *NotConfiguredVCSClient) EditComment(_ logging.SimpleLogging, _ models.Repo, _ int, _ int64, _ string) error {
+	return a.err()
+}
+
+func (a *NotConfiguredVCSClient) MaxCommentLength() int {
+	return 0
+}

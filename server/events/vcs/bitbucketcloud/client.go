@@ -17,6 +17,7 @@ import (
 
 	validator "github.com/go-playground/validator/v10"
 	"github.com/runatlantis/atlantis/server/events/models"
+	"github.com/runatlantis/atlantis/server/events/vcs"
 	"github.com/runatlantis/atlantis/server/logging"
 )
 
@@ -392,4 +393,52 @@ func (b *Client) GetCloneURL(_ logging.SimpleLogging, _ models.VCSHostType, _ st
 
 func (b *Client) GetPullLabels(_ logging.SimpleLogging, _ models.Repo, _ models.PullRequest) ([]string, error) {
 	return nil, fmt.Errorf("not yet implemented")
+}
+
+// ListComments returns all comments on a pull request.
+func (b *Client) ListComments(_ logging.SimpleLogging, repo models.Repo, pullNum int) ([]vcs.PullComment, error) {
+	comments, err := b.GetPullRequestComments(repo, pullNum)
+	if err != nil {
+		return nil, err
+	}
+	var result []vcs.PullComment
+	for _, c := range comments {
+		author := ""
+		if c.User != nil && c.User.UUID != nil {
+			author = *c.User.UUID
+		}
+		id := int64(0)
+		if c.ID != nil {
+			id = int64(*c.ID)
+		}
+		body := ""
+		if c.Content != nil {
+			body = c.Content.Raw
+		}
+		result = append(result, vcs.PullComment{
+			ID:     id,
+			Body:   body,
+			Author: author,
+		})
+	}
+	return result, nil
+}
+
+// EditComment updates the body of an existing comment by its ID.
+func (b *Client) EditComment(_ logging.SimpleLogging, repo models.Repo, pullNum int, commentID int64, body string) error {
+	bodyBytes, err := json.Marshal(map[string]map[string]string{"content": {
+		"raw": body,
+	}})
+	if err != nil {
+		return fmt.Errorf("json encoding: %w", err)
+	}
+	path := fmt.Sprintf("%s/2.0/repositories/%s/pullrequests/%d/comments/%d", b.BaseURL, repo.FullName, pullNum, commentID)
+	_, err = b.makeRequest("PUT", path, bytes.NewBuffer(bodyBytes))
+	return err
+}
+
+// MaxCommentLength returns the maximum number of characters allowed in a single Bitbucket Cloud comment.
+func (b *Client) MaxCommentLength() int {
+	// Bitbucket Cloud doesn't have a well-documented limit; tested up to 200k+.
+	return 0
 }

@@ -24,6 +24,7 @@ import (
 
 	"code.gitea.io/sdk/gitea"
 	"github.com/runatlantis/atlantis/server/events/models"
+	"github.com/runatlantis/atlantis/server/events/vcs"
 	"github.com/runatlantis/atlantis/server/logging"
 )
 
@@ -503,6 +504,55 @@ func (c *Client) GetPullLabels(logger logging.SimpleLogging, repo models.Repo, p
 	}
 
 	return results, nil
+}
+
+// ListComments returns all comments on a pull request.
+func (c *Client) ListComments(logger logging.SimpleLogging, repo models.Repo, pullNum int) ([]vcs.PullComment, error) {
+	logger.Debug("Listing comments on Gitea pull request %d", pullNum)
+	var result []vcs.PullComment
+	nextPage := 1
+	for {
+		opts := gitea.ListIssueCommentOptions{
+			ListOptions: gitea.ListOptions{
+				Page:     nextPage,
+				PageSize: c.pageSize,
+			},
+		}
+		comments, resp, err := c.giteaClient.ListIssueComments(repo.Owner, repo.Name, int64(pullNum), opts)
+		if err != nil {
+			return nil, fmt.Errorf("listing comments: %w", err)
+		}
+		for _, comment := range comments {
+			author := ""
+			if comment.Poster != nil {
+				author = comment.Poster.UserName
+			}
+			result = append(result, vcs.PullComment{
+				ID:     comment.ID,
+				Body:   comment.Body,
+				Author: author,
+			})
+		}
+		if resp.NextPage == 0 {
+			break
+		}
+		nextPage = resp.NextPage
+	}
+	return result, nil
+}
+
+// EditComment updates the body of an existing comment by its ID.
+func (c *Client) EditComment(logger logging.SimpleLogging, repo models.Repo, _ int, commentID int64, body string) error {
+	logger.Debug("Editing comment %d on Gitea repo %s/%s", commentID, repo.Owner, repo.Name)
+	_, _, err := c.giteaClient.EditIssueComment(repo.Owner, repo.Name, commentID, gitea.EditIssueCommentOption{
+		Body: body,
+	})
+	return err
+}
+
+// MaxCommentLength returns the maximum number of characters allowed in a single Gitea comment.
+func (c *Client) MaxCommentLength() int {
+	return 65536
 }
 
 func ValidateSignature(payload []byte, signature string, secretKey []byte) error {

@@ -27,6 +27,7 @@ import (
 	"github.com/jpillora/backoff"
 	"github.com/runatlantis/atlantis/server/events/command"
 	"github.com/runatlantis/atlantis/server/events/models"
+	"github.com/runatlantis/atlantis/server/events/vcs"
 	"github.com/runatlantis/atlantis/server/events/vcs/common"
 	"github.com/runatlantis/atlantis/server/logging"
 	gitlab "gitlab.com/gitlab-org/api/client-go"
@@ -784,4 +785,56 @@ func (g *Client) GetPullLabels(logger logging.SimpleLogging, repo models.Repo, p
 	}
 
 	return mr.Labels, nil
+}
+
+// ListComments returns all comments on a merge request.
+func (g *Client) ListComments(logger logging.SimpleLogging, repo models.Repo, pullNum int) ([]vcs.PullComment, error) {
+	logger.Debug("Listing comments on GitLab merge request %d", pullNum)
+	var result []vcs.PullComment
+	nextPage := 0
+	for {
+		notes, resp, err := g.Client.Notes.ListMergeRequestNotes(repo.FullName, pullNum,
+			&gitlab.ListMergeRequestNotesOptions{
+				Sort:        gitlab.Ptr("asc"),
+				OrderBy:     gitlab.Ptr("created_at"),
+				ListOptions: gitlab.ListOptions{Page: nextPage},
+			})
+		if resp != nil {
+			logger.Debug("GET /projects/%s/merge_requests/%d/notes returned: %d", repo.FullName, pullNum, resp.StatusCode)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("listing comments: %w", err)
+		}
+		for _, n := range notes {
+			if n.System {
+				continue
+			}
+			result = append(result, vcs.PullComment{
+				ID:     int64(n.ID),
+				Body:   n.Body,
+				Author: n.Author.Username,
+			})
+		}
+		if resp.NextPage == 0 {
+			break
+		}
+		nextPage = resp.NextPage
+	}
+	return result, nil
+}
+
+// EditComment updates the body of an existing comment by its ID.
+func (g *Client) EditComment(logger logging.SimpleLogging, repo models.Repo, pullNum int, commentID int64, body string) error {
+	logger.Debug("Editing comment %d on GitLab merge request %d", commentID, pullNum)
+	_, resp, err := g.Client.Notes.UpdateMergeRequestNote(repo.FullName, pullNum, int(commentID),
+		&gitlab.UpdateMergeRequestNoteOptions{Body: &body})
+	if resp != nil {
+		logger.Debug("PUT /projects/%s/merge_requests/%d/notes/%d returned: %d", repo.FullName, pullNum, commentID, resp.StatusCode)
+	}
+	return err
+}
+
+// MaxCommentLength returns the maximum number of characters allowed in a single GitLab comment.
+func (g *Client) MaxCommentLength() int {
+	return maxCommentLength
 }

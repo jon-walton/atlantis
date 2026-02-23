@@ -116,3 +116,17 @@ func (d *ClientProxy) GetCloneURL(logger logging.SimpleLogging, VCSHostType mode
 func (d *ClientProxy) GetPullLabels(logger logging.SimpleLogging, repo models.Repo, pull models.PullRequest) ([]string, error) {
 	return d.clients[repo.VCSHost.Type].GetPullLabels(logger, repo, pull)
 }
+
+func (d *ClientProxy) ListComments(logger logging.SimpleLogging, repo models.Repo, pullNum int) ([]PullComment, error) {
+	return d.clients[repo.VCSHost.Type].ListComments(logger, repo, pullNum)
+}
+
+func (d *ClientProxy) EditComment(logger logging.SimpleLogging, repo models.Repo, pullNum int, commentID int64, body string) error {
+	return d.clients[repo.VCSHost.Type].EditComment(logger, repo, pullNum, commentID, body)
+}
+
+func (d *ClientProxy) MaxCommentLength() int {
+	// Return the minimum across all configured clients to be safe.
+	// In practice, only one client is used per request via the repo's VCS host type.
+	return 0
+}

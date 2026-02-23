@@ -15,6 +15,7 @@ import (
 
 	"github.com/drmaxgit/go-azuredevops/azuredevops"
 	"github.com/runatlantis/atlantis/server/events/models"
+	"github.com/runatlantis/atlantis/server/events/vcs"
 	"github.com/runatlantis/atlantis/server/events/vcs/common"
 	"github.com/runatlantis/atlantis/server/logging"
 )
@@ -458,4 +459,19 @@ func (g *Client) GetCloneURL(_ logging.SimpleLogging, VCSHostType models.VCSHost
 
 func (g *Client) GetPullLabels(_ logging.SimpleLogging, _ models.Repo, _ models.PullRequest) ([]string, error) {
 	return nil, fmt.Errorf("not yet implemented")
+}
+
+// ListComments returns all comments on a pull request.
+func (g *Client) ListComments(_ logging.SimpleLogging, _ models.Repo, _ int) ([]vcs.PullComment, error) {
+	return nil, fmt.Errorf("ListComments not yet implemented for Azure DevOps")
+}
+
+// EditComment updates the body of an existing comment by its ID.
+func (g *Client) EditComment(_ logging.SimpleLogging, _ models.Repo, _ int, _ int64, _ string) error {
+	return fmt.Errorf("EditComment not yet implemented for Azure DevOps")
+}
+
+// MaxCommentLength returns the maximum number of characters allowed in a single Azure DevOps comment.
+func (g *Client) MaxCommentLength() int {
+	return 150000
 }

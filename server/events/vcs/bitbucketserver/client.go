@@ -13,11 +13,11 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/runatlantis/atlantis/server/events/vcs/common"
-	"github.com/runatlantis/atlantis/server/logging"
-
 	validator "github.com/go-playground/validator/v10"
 	"github.com/runatlantis/atlantis/server/events/models"
+	"github.com/runatlantis/atlantis/server/events/vcs"
+	"github.com/runatlantis/atlantis/server/events/vcs/common"
+	"github.com/runatlantis/atlantis/server/logging"
 )
 
 // maxCommentLength is the maximum number of chars allowed by Bitbucket in a
@@ -377,4 +377,91 @@ func (b *Client) GetCloneURL(_ logging.SimpleLogging, _ models.VCSHostType, _ st
 
 func (b *Client) GetPullLabels(_ logging.SimpleLogging, _ models.Repo, _ models.PullRequest) ([]string, error) {
 	return nil, fmt.Errorf("not yet implemented")
+}
+
+// ListComments returns all comments on a pull request.
+func (b *Client) ListComments(_ logging.SimpleLogging, repo models.Repo, pullNum int) ([]vcs.PullComment, error) {
+	projectKey, err := b.GetProjectKey(repo.Name, repo.SanitizedCloneURL)
+	if err != nil {
+		return nil, err
+	}
+	path := fmt.Sprintf("%s/rest/api/1.0/projects/%s/repos/%s/pull-requests/%d/activities",
+		b.BaseURL, projectKey, repo.Name, pullNum)
+
+	var result []vcs.PullComment
+	nextPageStart := 0
+	maxLoops := 100
+	for range maxLoops {
+		resp, err := b.makeRequest("GET", fmt.Sprintf("%s?start=%d", path, nextPageStart), nil)
+		if err != nil {
+			return nil, err
+		}
+		var activities struct {
+			Values []struct {
+				ID      int64  `json:"id"`
+				Action  string `json:"action"`
+				Comment *struct {
+					ID     int64  `json:"id"`
+					Text   string `json:"text"`
+					Author struct {
+						Slug string `json:"slug"`
+					} `json:"author"`
+				} `json:"comment,omitempty"`
+			} `json:"values"`
+			IsLastPage    bool `json:"isLastPage"`
+			NextPageStart int  `json:"nextPageStart"`
+		}
+		if err := json.Unmarshal(resp, &activities); err != nil {
+			return nil, fmt.Errorf("parsing response: %w", err)
+		}
+		for _, a := range activities.Values {
+			if a.Action == "COMMENTED" && a.Comment != nil {
+				result = append(result, vcs.PullComment{
+					ID:     a.Comment.ID,
+					Body:   a.Comment.Text,
+					Author: a.Comment.Author.Slug,
+				})
+			}
+		}
+		if activities.IsLastPage {
+			break
+		}
+		nextPageStart = activities.NextPageStart
+	}
+	return result, nil
+}
+
+// EditComment updates the body of an existing comment by its ID.
+func (b *Client) EditComment(_ logging.SimpleLogging, repo models.Repo, pullNum int, commentID int64, body string) error {
+	projectKey, err := b.GetProjectKey(repo.Name, repo.SanitizedCloneURL)
+	if err != nil {
+		return err
+	}
+	// First get the comment to obtain its version (required by Bitbucket Server for updates).
+	getPath := fmt.Sprintf("%s/rest/api/1.0/projects/%s/repos/%s/pull-requests/%d/comments/%d",
+		b.BaseURL, projectKey, repo.Name, pullNum, commentID)
+	resp, err := b.makeRequest("GET", getPath, nil)
+	if err != nil {
+		return fmt.Errorf("getting comment for version: %w", err)
+	}
+	var existing struct {
+		Version int `json:"version"`
+	}
+	if err := json.Unmarshal(resp, &existing); err != nil {
+		return fmt.Errorf("parsing comment response: %w", err)
+	}
+	bodyBytes, err := json.Marshal(map[string]any{
+		"text":    body,
+		"version": existing.Version,
+	})
+	if err != nil {
+		return fmt.Errorf("json encoding: %w", err)
+	}
+	_, err = b.makeRequest("PUT", getPath, bytes.NewBuffer(bodyBytes))
+	return err
+}
+
+// MaxCommentLength returns the maximum number of characters allowed in a single Bitbucket Server comment.
+func (b *Client) MaxCommentLength() int {
+	return maxCommentLength
 }

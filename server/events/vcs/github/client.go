@@ -30,6 +30,7 @@ import (
 	"github.com/google/go-github/v71/github"
 	"github.com/runatlantis/atlantis/server/events/command"
 	"github.com/runatlantis/atlantis/server/events/models"
+	"github.com/runatlantis/atlantis/server/events/vcs"
 	"github.com/runatlantis/atlantis/server/events/vcs/common"
 	"github.com/runatlantis/atlantis/server/logging"
 	"github.com/shurcooL/githubv4"
@@ -1193,4 +1194,57 @@ func (g *Client) GetPullLabels(logger logging.SimpleLogging, repo models.Repo, p
 	}
 
 	return labels, nil
+}
+
+// ListComments returns all comments on a pull request.
+func (g *Client) ListComments(logger logging.SimpleLogging, repo models.Repo, pullNum int) ([]vcs.PullComment, error) {
+	logger.Debug("Listing comments on GitHub pull request %d", pullNum)
+	var result []vcs.PullComment
+	nextPage := 0
+	for {
+		comments, resp, err := g.client.Issues.ListComments(g.ctx, repo.Owner, repo.Name, pullNum, &github.IssueListCommentsOptions{
+			Sort:        github.Ptr("created"),
+			Direction:   github.Ptr("asc"),
+			ListOptions: github.ListOptions{Page: nextPage},
+		})
+		if resp != nil {
+			logger.Debug("GET /repos/%v/%v/issues/%d/comments returned: %v", repo.Owner, repo.Name, pullNum, resp.StatusCode)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("listing comments: %w", err)
+		}
+		for _, c := range comments {
+			author := ""
+			if c.User != nil {
+				author = c.User.GetLogin()
+			}
+			result = append(result, vcs.PullComment{
+				ID:     c.GetID(),
+				Body:   c.GetBody(),
+				Author: author,
+			})
+		}
+		if resp.NextPage == 0 {
+			break
+		}
+		nextPage = resp.NextPage
+	}
+	return result, nil
+}
+
+// EditComment updates the body of an existing comment by its ID.
+func (g *Client) EditComment(logger logging.SimpleLogging, repo models.Repo, _ int, commentID int64, body string) error {
+	logger.Debug("Editing comment %d on GitHub repo %s/%s", commentID, repo.Owner, repo.Name)
+	_, resp, err := g.client.Issues.EditComment(g.ctx, repo.Owner, repo.Name, commentID, &github.IssueComment{
+		Body: &body,
+	})
+	if resp != nil {
+		logger.Debug("PATCH /repos/%v/%v/issues/comments/%d returned: %v", repo.Owner, repo.Name, commentID, resp.StatusCode)
+	}
+	return err
+}
+
+// MaxCommentLength returns the maximum number of characters allowed in a single GitHub comment.
+func (g *Client) MaxCommentLength() int {
+	return maxCommentLength
 }
