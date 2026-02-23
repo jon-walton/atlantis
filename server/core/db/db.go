@@ -36,6 +36,8 @@ type Database interface {
 	GetPullStatus(pull models.PullRequest) (*models.PullStatus, error)
 	DeletePullStatus(pull models.PullRequest) error
 	UpdatePullWithResults(pull models.PullRequest, newResults []command.ProjectResult) (models.PullStatus, error)
+	// UpdateLayerState updates only the LayerState portion of a pull's status.
+	UpdateLayerState(pull models.PullRequest, state *models.LayerState) error
 
 	LockCommand(cmdName command.Name, lockTime time.Time) (*command.Lock, error)
 	UnlockCommand(cmdName command.Name) error

@@ -414,6 +414,30 @@ func (r *RedisDB) UpdatePullWithResults(pull models.PullRequest, newResults []co
 	return newStatus, nil
 }
 
+// UpdateLayerState updates only the LayerState portion of a pull's status.
+func (r *RedisDB) UpdateLayerState(pull models.PullRequest, state *models.LayerState) error {
+	key, err := r.pullKey(pull)
+	if err != nil {
+		return err
+	}
+
+	currStatusPtr, err := r.getPull(key)
+	if err != nil {
+		return err
+	}
+	if currStatusPtr == nil {
+		return nil
+	}
+	currStatus := *currStatusPtr
+	currStatus.LayerState = state
+
+	err = r.writePull(key, currStatus)
+	if err != nil {
+		return fmt.Errorf("db transaction failed: %w", err)
+	}
+	return nil
+}
+
 func (r *RedisDB) getPull(key string) (*models.PullStatus, error) {
 	val, err := r.client.Get(ctx, key).Result()
 	if err == redis.Nil {

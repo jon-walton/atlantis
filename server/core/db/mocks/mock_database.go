@@ -367,6 +367,21 @@ func (mock *MockDatabase) UnlockCommand(cmdName command.Name) error {
 	return _ret0
 }
 
+func (mock *MockDatabase) UpdateLayerState(pull models.PullRequest, state *models.LayerState) error {
+	if mock == nil {
+		panic("mock must not be nil. Use myMock := NewMockDatabase().")
+	}
+	_params := []pegomock.Param{pull, state}
+	_result := pegomock.GetGenericMockFrom(mock).Invoke("UpdateLayerState", _params, []reflect.Type{reflect.TypeOf((*error)(nil)).Elem()})
+	var _ret0 error
+	if len(_result) != 0 {
+		if _result[0] != nil {
+			_ret0 = _result[0].(error)
+		}
+	}
+	return _ret0
+}
+
 func (mock *MockDatabase) UpdateProjectStatus(pull models.PullRequest, workspace string, repoRelDir string, newStatus models.ProjectPlanStatus) error {
 	if mock == nil {
 		panic("mock must not be nil. Use myMock := NewMockDatabase().")
@@ -1031,6 +1046,41 @@ func (c *MockDatabase_UnlockCommand_OngoingVerification) GetAllCapturedArguments
 			_param0 = make([]command.Name, len(c.methodInvocations))
 			for u, param := range _params[0] {
 				_param0[u] = param.(command.Name)
+			}
+		}
+	}
+	return
+}
+
+func (verifier *VerifierMockDatabase) UpdateLayerState(pull models.PullRequest, state *models.LayerState) *MockDatabase_UpdateLayerState_OngoingVerification {
+	_params := []pegomock.Param{pull, state}
+	methodInvocations := pegomock.GetGenericMockFrom(verifier.mock).Verify(verifier.inOrderContext, verifier.invocationCountMatcher, "UpdateLayerState", _params, verifier.timeout)
+	return &MockDatabase_UpdateLayerState_OngoingVerification{mock: verifier.mock, methodInvocations: methodInvocations}
+}
+
+type MockDatabase_UpdateLayerState_OngoingVerification struct {
+	mock              *MockDatabase
+	methodInvocations []pegomock.MethodInvocation
+}
+
+func (c *MockDatabase_UpdateLayerState_OngoingVerification) GetCapturedArguments() (models.PullRequest, *models.LayerState) {
+	pull, state := c.GetAllCapturedArguments()
+	return pull[len(pull)-1], state[len(state)-1]
+}
+
+func (c *MockDatabase_UpdateLayerState_OngoingVerification) GetAllCapturedArguments() (_param0 []models.PullRequest, _param1 []*models.LayerState) {
+	_params := pegomock.GetGenericMockFrom(c.mock).GetInvocationParams(c.methodInvocations)
+	if len(_params) > 0 {
+		if len(_params) > 0 {
+			_param0 = make([]models.PullRequest, len(c.methodInvocations))
+			for u, param := range _params[0] {
+				_param0[u] = param.(models.PullRequest)
+			}
+		}
+		if len(_params) > 1 {
+			_param1 = make([]*models.LayerState, len(c.methodInvocations))
+			for u, param := range _params[1] {
+				_param1[u] = param.(*models.LayerState)
 			}
 		}
 	}

@@ -548,6 +548,27 @@ func (b *BoltDB) UpdateProjectStatus(pull models.PullRequest, workspace string, 
 	return nil
 }
 
+// UpdateLayerState updates only the LayerState portion of a pull's status.
+func (b *BoltDB) UpdateLayerState(pull models.PullRequest, state *models.LayerState) error {
+	key, err := b.pullKey(pull)
+	if err != nil {
+		return err
+	}
+	return b.db.Update(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket(b.pullsBucketName)
+		currStatusPtr, err := b.getPullFromBucket(bucket, key)
+		if err != nil {
+			return err
+		}
+		if currStatusPtr == nil {
+			return nil
+		}
+		currStatus := *currStatusPtr
+		currStatus.LayerState = state
+		return b.writePullToBucket(bucket, key, currStatus)
+	})
+}
+
 func (b *BoltDB) pullKey(pull models.PullRequest) ([]byte, error) {
 	hostname := pull.BaseRepo.VCSHost.Hostname
 	if strings.Contains(hostname, pullKeySeparator) {

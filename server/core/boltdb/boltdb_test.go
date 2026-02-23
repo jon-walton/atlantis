@@ -732,7 +732,7 @@ func TestPullStatus_UpdateProject(t *testing.T) {
 			Workspace:   "staging",
 			RepoRelDir:  ".",
 			ProjectName: "",
-			Status:      models.AppliedPlanStatus,
+			Status:      models.AppliedStatus,
 		},
 	}, status.Projects) // nolint: staticcheck
 	b.Close()
@@ -799,7 +799,7 @@ func TestPullStatus_UpdateNewCommit(t *testing.T) {
 			Workspace:   "staging",
 			RepoRelDir:  ".",
 			ProjectName: "",
-			Status:      models.AppliedPlanStatus,
+			Status:      models.AppliedStatus,
 		},
 	}, maybeStatus.Projects)
 	b.Close()
@@ -907,7 +907,7 @@ func TestPullStatus_UpdateMerge_Apply(t *testing.T) {
 			{
 				RepoRelDir: "mergeme",
 				Workspace:  "default",
-				Status:     models.AppliedPlanStatus,
+				Status:     models.AppliedStatus,
 			},
 			{
 				RepoRelDir:  "projectname",
@@ -923,7 +923,7 @@ func TestPullStatus_UpdateMerge_Apply(t *testing.T) {
 			{
 				RepoRelDir: "newresult",
 				Workspace:  "default",
-				Status:     models.AppliedPlanStatus,
+				Status:     models.AppliedStatus,
 			},
 		}, updateStatus.Projects)
 	}
@@ -1740,4 +1740,93 @@ func TestBoltDB_GetProjectOutputByJobID_EmptyJobID(t *testing.T) {
 	Ok(t, err)
 	// The scan finds outputs with matching (empty) job ID
 	Assert(t, retrieved != nil, "fallback scan should find output with empty job ID")
+}
+
+func TestUpdateLayerState(t *testing.T) {
+	t.Log("updating layer state should persist and be retrievable")
+	db := newTestDB2(t)
+	defer db.Close()
+
+	pull := models.PullRequest{
+		Num:        42,
+		HeadCommit: "abc123",
+		BaseRepo: models.Repo{
+			FullName: "owner/repo",
+			VCSHost: models.VCSHost{
+				Hostname: "github.com",
+			},
+		},
+	}
+
+	// First create a pull status
+	_, err := db.UpdatePullWithResults(pull, []command.ProjectResult{
+		{
+			Command:    command.Plan,
+			RepoRelDir: "dir1",
+			Workspace:  "default",
+			ProjectCommandOutput: command.ProjectCommandOutput{
+				PlanSuccess: &models.PlanSuccess{},
+			},
+		},
+	})
+	Ok(t, err)
+
+	// Now update with layer state
+	layerState := &models.LayerState{
+		Enabled:      true,
+		CurrentLayer: 0,
+		TotalLayers:  2,
+		DependencyGraph: map[string][]string{
+			"A": {},
+			"B": {"A"},
+		},
+		ProjectLayers: map[string]int{
+			"A": 0,
+			"B": 1,
+		},
+		PendingProjects: []string{"C"},
+	}
+
+	err = db.UpdateLayerState(pull, layerState)
+	Ok(t, err)
+
+	// Read back and verify
+	status, err := db.GetPullStatus(pull)
+	Ok(t, err)
+	Assert(t, status != nil, "expected non-nil pull status")
+	Assert(t, status.LayerState != nil, "expected non-nil layer state")
+	Equals(t, true, status.LayerState.Enabled)
+	Equals(t, 0, status.LayerState.CurrentLayer)
+	Equals(t, 2, status.LayerState.TotalLayers)
+	Equals(t, []string{"C"}, status.LayerState.PendingProjects)
+	Equals(t, map[string]int{"A": 0, "B": 1}, status.LayerState.ProjectLayers)
+
+	// Update to nil (clear layer state)
+	err = db.UpdateLayerState(pull, nil)
+	Ok(t, err)
+
+	status, err = db.GetPullStatus(pull)
+	Ok(t, err)
+	Assert(t, status != nil, "expected non-nil pull status")
+	Assert(t, status.LayerState == nil, "expected nil layer state after clearing")
+}
+
+func TestUpdateLayerState_NoPull(t *testing.T) {
+	t.Log("updating layer state with no existing pull should be a no-op")
+	db := newTestDB2(t)
+	defer db.Close()
+
+	pull := models.PullRequest{
+		Num: 99,
+		BaseRepo: models.Repo{
+			FullName: "owner/repo",
+			VCSHost: models.VCSHost{
+				Hostname: "github.com",
+			},
+		},
+	}
+
+	// Should not error even though no pull exists
+	err := db.UpdateLayerState(pull, &models.LayerState{Enabled: true})
+	Ok(t, err)
 }

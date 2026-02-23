@@ -744,7 +744,7 @@ func TestPullStatus_UpdateProject(t *testing.T) {
 			Workspace:   "staging",
 			RepoRelDir:  ".",
 			ProjectName: "",
-			Status:      models.AppliedPlanStatus,
+			Status:      models.AppliedStatus,
 		},
 	}, status.Projects) // nolint: staticcheck
 }
@@ -811,7 +811,7 @@ func TestPullStatus_UpdateNewCommit(t *testing.T) {
 			Workspace:   "staging",
 			RepoRelDir:  ".",
 			ProjectName: "",
-			Status:      models.AppliedPlanStatus,
+			Status:      models.AppliedStatus,
 		},
 	}, maybeStatus.Projects)
 }
@@ -919,7 +919,7 @@ func TestPullStatus_UpdateMerge_Apply(t *testing.T) {
 			{
 				RepoRelDir: "mergeme",
 				Workspace:  "default",
-				Status:     models.AppliedPlanStatus,
+				Status:     models.AppliedStatus,
 			},
 			{
 				RepoRelDir:  "projectname",
@@ -935,7 +935,7 @@ func TestPullStatus_UpdateMerge_Apply(t *testing.T) {
 			{
 				RepoRelDir: "newresult",
 				Workspace:  "default",
-				Status:     models.AppliedPlanStatus,
+				Status:     models.AppliedStatus,
 			},
 		}, updateStatus.Projects)
 	}
