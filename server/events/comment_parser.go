@@ -81,17 +81,18 @@ type CommentBuilder interface {
 
 // CommentParser implements CommentParsing
 type CommentParser struct {
-	GithubUser      string
-	GitlabUser      string
-	GiteaUser       string
-	BitbucketUser   string
-	AzureDevopsUser string
-	ExecutableName  string
-	AllowCommands   []command.Name
+	GithubUser                string
+	GitlabUser                string
+	GiteaUser                 string
+	BitbucketUser             string
+	AzureDevopsUser           string
+	ExecutableName            string
+	AllowCommands             []command.Name
+	EnableLayeredApplySkip    bool
 }
 
 // NewCommentParser returns a CommentParser
-func NewCommentParser(githubUser, gitlabUser, giteaUser, bitbucketUser, azureDevopsUser, executableName string, allowCommands []command.Name) *CommentParser {
+func NewCommentParser(githubUser, gitlabUser, giteaUser, bitbucketUser, azureDevopsUser, executableName string, allowCommands []command.Name, enableLayeredApplySkip bool) *CommentParser {
 	var commentAllowCommands []command.Name
 	for _, acceptableCommand := range command.AllCommentCommands {
 		for _, allowCommand := range allowCommands {
@@ -103,13 +104,14 @@ func NewCommentParser(githubUser, gitlabUser, giteaUser, bitbucketUser, azureDev
 	}
 
 	return &CommentParser{
-		GithubUser:      githubUser,
-		GitlabUser:      gitlabUser,
-		GiteaUser:       giteaUser,
-		BitbucketUser:   bitbucketUser,
-		AzureDevopsUser: azureDevopsUser,
-		ExecutableName:  executableName,
-		AllowCommands:   commentAllowCommands,
+		GithubUser:             githubUser,
+		GitlabUser:             gitlabUser,
+		GiteaUser:              giteaUser,
+		BitbucketUser:          bitbucketUser,
+		AzureDevopsUser:        azureDevopsUser,
+		ExecutableName:         executableName,
+		AllowCommands:          commentAllowCommands,
+		EnableLayeredApplySkip: enableLayeredApplySkip,
 	}
 }
 
@@ -234,6 +236,7 @@ func (e *CommentParser) Parse(rawComment string, vcsHost models.VCSHostType) Com
 	var verbose bool
 	var autoMergeDisabled bool
 	var autoMergeMethod string
+	var skipProject string
 	var flagSet *pflag.FlagSet
 	var name command.Name
 
@@ -257,6 +260,9 @@ func (e *CommentParser) Parse(rawComment string, vcsHost models.VCSHostType) Com
 		flagSet.BoolVarP(&autoMergeDisabled, autoMergeDisabledFlagLong, autoMergeDisabledFlagShort, false, "Disable automerge after apply.")
 		flagSet.StringVarP(&autoMergeMethod, autoMergeMethodFlagLong, autoMergeMethodFlagShort, "", "Specifies the merge method for the VCS if automerge is enabled. (Currently only implemented for GitHub)")
 		flagSet.BoolVarP(&verbose, verboseFlagLong, verboseFlagShort, false, "Append Atlantis log to comment.")
+		if e.EnableLayeredApplySkip {
+			flagSet.StringVar(&skipProject, "skip", "", "Skip a failed project in the current layer (layered planning only).")
+		}
 	case command.ApprovePolicies.String():
 		name = command.ApprovePolicies
 		flagSet = pflag.NewFlagSet(command.ApprovePolicies.String(), pflag.ContinueOnError)
@@ -341,8 +347,15 @@ func (e *CommentParser) Parse(rawComment string, vcsHost models.VCSHostType) Com
 		}
 	}
 
+	// Validate --skip cannot be used with -d/-p/-w
+	if skipProject != "" && (dir != "" || workspace != "" || project != "") {
+		return CommentParseResult{CommentResponse: e.errMarkdown(
+			"cannot use --skip at the same time as -d/-w/-p flags",
+			cmd, flagSet)}
+	}
+
 	return CommentParseResult{
-		Command: NewCommentCommand(dir, extraArgs, name, subName, verbose, autoMergeDisabled, autoMergeMethod, workspace, project, policySet, clearPolicyApproval),
+		Command: NewCommentCommand(dir, extraArgs, name, subName, verbose, autoMergeDisabled, autoMergeMethod, workspace, project, policySet, clearPolicyApproval, skipProject),
 	}
 }
 

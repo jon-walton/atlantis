@@ -23,6 +23,7 @@ import (
 	"github.com/runatlantis/atlantis/server/events/models"
 	. "github.com/runatlantis/atlantis/testing"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 var commentParser = events.CommentParser{
@@ -70,7 +71,7 @@ func TestNewCommentParser(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equalf(t, tt.want, events.NewCommentParser(tt.args.githubUser, tt.args.gitlabUser, tt.args.giteaUser, tt.args.bitbucketUser, tt.args.azureDevopsUser, tt.args.executableName, tt.args.allowCommands), "NewCommentParser(%v, %v, %v, %v, %v, %v)", tt.args.githubUser, tt.args.gitlabUser, tt.args.bitbucketUser, tt.args.azureDevopsUser, tt.args.executableName, tt.args.allowCommands)
+			assert.Equalf(t, tt.want, events.NewCommentParser(tt.args.githubUser, tt.args.gitlabUser, tt.args.giteaUser, tt.args.bitbucketUser, tt.args.azureDevopsUser, tt.args.executableName, tt.args.allowCommands, false), "NewCommentParser(%v, %v, %v, %v, %v, %v)", tt.args.githubUser, tt.args.gitlabUser, tt.args.bitbucketUser, tt.args.azureDevopsUser, tt.args.executableName, tt.args.allowCommands)
 		})
 	}
 }
@@ -306,6 +307,7 @@ func TestParse_InvalidCommand(t *testing.T) {
 			command.Plan,
 			command.Apply, // duplicate command is filtered
 		},
+		false,
 	)
 	for _, c := range comments {
 		r := cp.Parse(c, models.Github)
@@ -1166,3 +1168,70 @@ var ImportUsage = `Usage of import ADDRESS ID:
       --verbose            Append Atlantis log to comment.
   -w, --workspace string   Switch to this Terraform workspace before importing.
 `
+
+func TestParse_ApplySkipFlag(t *testing.T) {
+	skipParser := events.CommentParser{
+		GithubUser:             "github-user",
+		GitlabUser:             "gitlab-user",
+		GiteaUser:              "gitea-user",
+		ExecutableName:         "atlantis",
+		AllowCommands:          command.AllCommentCommands,
+		EnableLayeredApplySkip: true,
+	}
+
+	tests := []struct {
+		name        string
+		comment     string
+		expSkip     string
+		expProject  string
+		expErr      bool
+		errContains string
+	}{
+		{
+			name:    "skip flag with project name",
+			comment: "atlantis apply --skip myproject",
+			expSkip: "myproject",
+		},
+		{
+			name:    "skip flag no value",
+			comment: "atlantis apply --skip",
+			expErr:  true,
+		},
+		{
+			name:        "skip flag with dir flag",
+			comment:     "atlantis apply --skip myproject -d somedir",
+			expErr:      true,
+			errContains: "cannot use --skip at the same time as -d/-w/-p flags",
+		},
+		{
+			name:        "skip flag with project flag",
+			comment:     "atlantis apply --skip myproject -p otherproject",
+			expErr:      true,
+			errContains: "cannot use --skip at the same time as -d/-w/-p flags",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := skipParser.Parse(tt.comment, models.Github)
+			if tt.expErr {
+				assert.NotEmpty(t, r.CommentResponse,
+					"expected error response but got command: %+v", r.Command)
+				if tt.errContains != "" {
+					assert.Contains(t, r.CommentResponse, tt.errContains)
+				}
+			} else {
+				require.NotNil(t, r.Command)
+				assert.Equal(t, tt.expSkip, r.Command.SkipProject)
+				assert.Equal(t, command.Apply, r.Command.Name)
+			}
+		})
+	}
+}
+
+func TestParse_ApplySkipDisabled(t *testing.T) {
+	// When EnableLayeredApplySkip is false, --skip flag should not be recognized
+	r := commentParser.Parse("atlantis apply --skip myproject", models.Github)
+	// Should fail parsing since --skip is unknown
+	assert.NotEmpty(t, r.CommentResponse, "expected error when skip is disabled")
+}
