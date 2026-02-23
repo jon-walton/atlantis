@@ -7,7 +7,9 @@ tmp_dir = "tmp"
   # Binary path
   bin = "./tmp/atlantis"
   # Full command with arguments
-  full_bin = "./tmp/atlantis server --atlantis-url=http://localhost:4141 --gh-user=test --gh-token=test --gh-webhook-secret=test --repo-allowlist=* --data-dir=data"
+  # Sources atlantis.env for config, then runs the server.
+  # All ATLANTIS_* env vars are read natively by Atlantis.
+  full_bin = "sh -c 'set -a && . ./atlantis.env && set +a && ./tmp/atlantis server --data-dir=data'"
   delay = 1000
   exclude_dir = ["assets", "tmp", "vendor", "node_modules", "data"]
   exclude_file = []

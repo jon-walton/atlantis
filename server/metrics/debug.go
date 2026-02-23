@@ -40,57 +40,31 @@ func (r *debugReporter) Flush() {
 	// Silence.
 }
 
-func (r *debugReporter) ReportCounter(name string, tags map[string]string, value int64) {
-	log := r.log.With("name", name, "value", value, "tags", tags, "type", "counter")
-	log.Debug("counter")
+func (r *debugReporter) ReportCounter(_ string, _ map[string]string, _ int64) {
 }
 
-func (r *debugReporter) ReportGauge(name string, tags map[string]string, value float64) {
-	log := r.log.With("name", name, "value", value, "tags", tags, "type", "gauge")
-	log.Debug("gauge")
+func (r *debugReporter) ReportGauge(_ string, _ map[string]string, _ float64) {
 }
 
-func (r *debugReporter) ReportTimer(name string, tags map[string]string, interval time.Duration) {
-	log := r.log.With("name", name, "value", interval, "tags", tags, "type", "timer")
-	log.Debug("timer")
+func (r *debugReporter) ReportTimer(_ string, _ map[string]string, _ time.Duration) {
 }
 
 func (r *debugReporter) ReportHistogramValueSamples(
-	name string,
-	tags map[string]string,
-	buckets tally.Buckets,
-	bucketLowerBound,
-	bucketUpperBound float64,
-	samples int64,
+	_ string,
+	_ map[string]string,
+	_ tally.Buckets,
+	_,
+	_ float64,
+	_ int64,
 ) {
-	log := r.log.With(
-		"name", name,
-		"buckets", buckets.AsValues(),
-		"bucketLowerBound", bucketLowerBound,
-		"bucketUpperBound", bucketUpperBound,
-		"samples", samples,
-		"tags", tags,
-		"type", "valueHistogram",
-	)
-	log.Debug("histogram")
 }
 
 func (r *debugReporter) ReportHistogramDurationSamples(
-	name string,
-	tags map[string]string,
-	buckets tally.Buckets,
-	bucketLowerBound,
-	bucketUpperBound time.Duration,
-	samples int64,
+	_ string,
+	_ map[string]string,
+	_ tally.Buckets,
+	_,
+	_ time.Duration,
+	_ int64,
 ) {
-	log := r.log.With(
-		"name", name,
-		"buckets", buckets.AsValues(),
-		"bucketLowerBound", bucketLowerBound,
-		"bucketUpperBound", bucketUpperBound,
-		"samples", samples,
-		"tags", tags,
-		"type", "durationHistogram",
-	)
-	log.Debug("histogram")
 }

@@ -1,6 +1,18 @@
 # Note: This file is only used for Atlantis local development
+#
+# Usage:
+#   Local dev with Gitea (no ngrok needed):
+#     docker compose --profile gitea up
+#
+#   Local dev with ngrok (for GitHub/GitLab webhooks):
+#     docker compose --profile ngrok up
+#
+#   Just Atlantis + Redis:
+#     docker compose up
+#
 services:
   ngrok:
+    profiles: ["ngrok"]
     image: ngrok/ngrok:latest@sha256:d20e9631f5d5744353558b0d4bd5c5274bb2cc726c546a1a4873b59548024894
     ports:
       - 4040:4040
@@ -11,6 +23,21 @@ services:
       - atlantis.env
     depends_on:
       - atlantis
+  gitea:
+    profiles: ["gitea"]
+    image: gitea/gitea:1.23-rootless
+    restart: always
+    ports:
+      - 3000:3000
+    environment:
+      - GITEA__database__DB_TYPE=sqlite3
+      - GITEA__server__ROOT_URL=http://localhost:3000
+      - GITEA__server__HTTP_PORT=3000
+      - GITEA__webhook__ALLOWED_HOST_LIST=*
+      - GITEA__webhook__SKIP_TLS_VERIFY=true
+    volumes:
+      - gitea-data:/var/lib/gitea
+      - gitea-config:/etc/gitea
   redis:
     image: redis:7.4-alpine@sha256:02f2cc4882f8bf87c79a220ac958f58c700bdec0dfb9b9ea61b62fb0e8f1bfcf
     restart: always
@@ -19,21 +46,25 @@ services:
     command: redis-server --save 20 1 --loglevel warning --requirepass test123
     volumes:
       - redis:/data
-  atlantis:
-    depends_on:
-      - redis
-    build:
-      context: .
-      dockerfile: Dockerfile.dev
-    ports:
-      - 4141:4141
-    volumes:
-      - ${HOME}/.ssh:/.ssh:ro
-      - ${PWD}:/atlantis/src:ro
-    # Contains the flags that atlantis uses in env var form
-    env_file:
-      - atlantis.env
+#  atlantis:
+#    depends_on:
+#      - redis
+#    build:
+#      context: .
+#      dockerfile: Dockerfile.dev
+#    ports:
+#      - 4141:4141
+#    volumes:
+#      - ${HOME}/.ssh:/.ssh:ro
+#      - ${PWD}:/atlantis/src:ro
+#    # Contains the flags that atlantis uses in env var form
+#    env_file:
+#      - atlantis.env
 
 volumes:
   redis:
+    driver: local
+  gitea-data:
+    driver: local
+  gitea-config:
     driver: local
