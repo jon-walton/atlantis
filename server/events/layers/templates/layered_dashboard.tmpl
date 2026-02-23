@@ -1,0 +1,28 @@
+{{ define "layeredDashboard" -}}
+<!-- Atlantis Layered Planning Dashboard -->
+## Layered Planning Dashboard
+{{ range .Layers }}
+{{ if .IsCurrent -}}
+**Layer {{ .Number }}** _(current)_
+{{ range .Projects }}
+- {{ .Status.Icon }} {{ .Status.String }} — `{{ .Name }}`
+{{- end }}
+{{ else if .IsCompleted }}
+<details><summary><b>Layer {{ .Number }}</b> — {{ .Summary }}</summary>
+{{ range .Projects }}
+- {{ .Status.Icon }} {{ .Status.String }} — `{{ .Name }}`
+{{- end }}
+
+</details>
+{{ else -}}
+**Layer {{ .Number }}**
+{{ range .Projects }}
+- {{ .Status.Icon }} {{ .Status.String }} — `{{ .Name }}`
+{{- end }}
+{{ end -}}
+{{ end -}}
+{{ if gt .PendingCount 0 }}
+---
+_{{ .PendingCount }} additional projects pending based on upstream results_
+{{ end -}}
+{{ end }}

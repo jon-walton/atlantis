@@ -1,0 +1,596 @@
+// Copyright 2025 The Atlantis Authors
+// SPDX-License-Identifier: Apache-2.0
+
+package events
+
+import (
+	"fmt"
+
+	"github.com/runatlantis/atlantis/server/events/models"
+)
+
+// LayerStateManager manages the state machine for layered planning.
+// It is the single source of truth for layer progression, cascade
+// evaluation, and skip handling.
+type LayerStateManager interface {
+	// InitializeLayerState builds the initial LayerState from the dependency
+	// graph and the set of in-scope projects (those with git file changes).
+	// Returns nil if layered planning is not needed (no depends_on relationships).
+	InitializeLayerState(
+		projects []models.ProjectStatus,
+		dependencyGraph map[string][]string,
+		changedProjects map[string]bool,
+	) (*models.LayerState, error)
+
+	// GetCurrentLayerProjects returns the project names in the current layer.
+	GetCurrentLayerProjects(state *models.LayerState) []string
+
+	// GetPendingCount returns the count of projects not yet in any processed layer.
+	GetPendingCount(state *models.LayerState) int
+
+	// IsLayerComplete returns true if all projects in the given layer have a
+	// terminal status (applied, no-changes, or skipped). It also returns the
+	// list of projects still waiting for action.
+	IsLayerComplete(pullStatus *models.PullStatus, layer int) (complete bool, blocking []string)
+
+	// CanAdvance returns true if the current layer is complete and there are
+	// more layers to process or pending projects to evaluate.
+	CanAdvance(pullStatus *models.PullStatus) bool
+
+	// AdvanceLayer moves to the next layer, performing cascade evaluation.
+	// Returns the updated LayerState and the list of project names to plan next.
+	AdvanceLayer(pullStatus *models.PullStatus) (*models.LayerState, []string, error)
+
+	// SkipProject marks a project as skipped.
+	SkipProject(pullStatus *models.PullStatus, projectName string, skipEnabled bool) (*models.PullStatus, error)
+
+	// HandleNewCommit determines the impact of new commits on layered state.
+	HandleNewCommit(pullStatus *models.PullStatus, affectedProjects []string) ResetAction
+
+	// ResetLayerState rolls back layer state to the specified layer, clearing
+	// all project assignments and status for layers >= resetToLayer and moving
+	// those projects back to PendingProjects.
+	ResetLayerState(state *models.LayerState, resetToLayer int) error
+
+	// IsAllComplete returns true if all layers have been processed.
+	IsAllComplete(pullStatus *models.PullStatus) bool
+
+	// GetLayerSummary returns a summary of each layer's status for dashboard rendering.
+	GetLayerSummary(pullStatus *models.PullStatus) []LayerSummary
+
+	// StampLayerAssignments sets the Layer field on each ProjectStatus based on
+	// the LayerState's ProjectLayers mapping.
+	StampLayerAssignments(pullStatus *models.PullStatus)
+}
+
+// ResetAction describes what should happen when new commits affect layered state.
+type ResetAction struct {
+	// ResetToLayer is the layer to reset back to (-1 = no reset needed).
+	ResetToLayer int
+
+	// ReplanProjects lists projects in the current layer that need re-planning.
+	ReplanProjects []string
+
+	// NoAction is true if no projects in processed layers were affected.
+	NoAction bool
+}
+
+// LayerSummary describes the status of a single layer for dashboard rendering.
+type LayerSummary struct {
+	// Layer is the layer index.
+	Layer int
+
+	// IsCurrent is true if this is the active layer.
+	IsCurrent bool
+
+	// IsComplete is true if all projects in this layer are done.
+	IsComplete bool
+
+	// Projects is the list of project statuses in this layer.
+	Projects []models.ProjectStatus
+}
+
+// projectStatusKey returns the lookup key for a ProjectStatus, matching the
+// format used by projectContextKey() in layer_manager.go. If ProjectName is
+// set, it is used; otherwise we fall back to "RepoRelDir::Workspace".
+func projectStatusKey(p models.ProjectStatus) string {
+	if p.ProjectName != "" {
+		return p.ProjectName
+	}
+	return p.RepoRelDir + "::" + p.Workspace
+}
+
+// DefaultLayerStateManager implements LayerStateManager.
+type DefaultLayerStateManager struct{}
+
+// NewLayerStateManager creates a new DefaultLayerStateManager.
+func NewLayerStateManager() *DefaultLayerStateManager {
+	return &DefaultLayerStateManager{}
+}
+
+func (m *DefaultLayerStateManager) InitializeLayerState(
+	projects []models.ProjectStatus,
+	dependencyGraph map[string][]string,
+	changedProjects map[string]bool,
+) (*models.LayerState, error) {
+	// If no dependencies exist, return nil (no layered planning needed)
+	hasDeps := false
+	for _, deps := range dependencyGraph {
+		if len(deps) > 0 {
+			hasDeps = true
+			break
+		}
+	}
+	if !hasDeps {
+		return nil, nil
+	}
+
+	// Check for circular dependencies
+	if err := detectCycles(dependencyGraph); err != nil {
+		return nil, err
+	}
+
+	// Topologically sort changed projects into layers
+	projectLayers := make(map[string]int)
+	maxLayer := 0
+
+	// Compute layers using depth in the dependency graph
+	computed := make(map[string]int)
+	var computeLayer func(project string) int
+	computeLayer = func(project string) int {
+		if layer, ok := computed[project]; ok {
+			return layer
+		}
+		layer := 0
+		for _, dep := range dependencyGraph[project] {
+			if changedProjects[dep] {
+				depLayer := computeLayer(dep) + 1
+				if depLayer > layer {
+					layer = depLayer
+				}
+			}
+		}
+		computed[project] = layer
+		return layer
+	}
+
+	for project := range changedProjects {
+		layer := computeLayer(project)
+		projectLayers[project] = layer
+		if layer > maxLayer {
+			maxLayer = layer
+		}
+	}
+
+	// Identify pending projects: all transitive dependents of changed projects
+	// that don't have git changes themselves
+	var pending []string
+	reverseDeps := buildReverseDependencyMap(dependencyGraph)
+	visited := make(map[string]bool)
+	var walkDependents func(project string)
+	walkDependents = func(project string) {
+		for _, dependent := range reverseDeps[project] {
+			if visited[dependent] {
+				continue
+			}
+			visited[dependent] = true
+			if !changedProjects[dependent] {
+				pending = append(pending, dependent)
+			}
+			walkDependents(dependent)
+		}
+	}
+	for project := range changedProjects {
+		walkDependents(project)
+	}
+	pending = deduplicate(pending)
+
+	return &models.LayerState{
+		Enabled:          true,
+		CurrentLayer:     0,
+		TotalLayers:      maxLayer + 1,
+		DependencyGraph:  dependencyGraph,
+		ProjectLayers:    projectLayers,
+		PendingProjects:  pending,
+		SkippedUpstreams: make(map[string]bool),
+	}, nil
+}
+
+func (m *DefaultLayerStateManager) GetCurrentLayerProjects(state *models.LayerState) []string {
+	if state == nil {
+		return nil
+	}
+	var projects []string
+	for name, layer := range state.ProjectLayers {
+		if layer == state.CurrentLayer {
+			projects = append(projects, name)
+		}
+	}
+	return projects
+}
+
+func (m *DefaultLayerStateManager) GetPendingCount(state *models.LayerState) int {
+	if state == nil {
+		return 0
+	}
+	return len(state.PendingProjects)
+}
+
+func (m *DefaultLayerStateManager) IsLayerComplete(
+	pullStatus *models.PullStatus,
+	layer int,
+) (bool, []string) {
+	if pullStatus.LayerState == nil {
+		return true, nil
+	}
+
+	var blocking []string
+	for _, proj := range pullStatus.Projects {
+		if proj.Layer != layer {
+			continue
+		}
+		switch proj.Status {
+		case models.AppliedStatus,
+			models.PlannedNoChangesPlanStatus,
+			models.SkippedPlanStatus:
+			// Terminal states - this project is done
+			continue
+		default:
+			blocking = append(blocking, projectStatusKey(proj))
+		}
+	}
+	return len(blocking) == 0, blocking
+}
+
+func (m *DefaultLayerStateManager) CanAdvance(pullStatus *models.PullStatus) bool {
+	state := pullStatus.LayerState
+	if state == nil {
+		return false
+	}
+
+	// Check if current layer is complete
+	complete, _ := m.IsLayerComplete(pullStatus, state.CurrentLayer)
+	if !complete {
+		return false
+	}
+
+	// Can advance if there are more known layers or pending projects
+	if state.CurrentLayer+1 < state.TotalLayers {
+		return true
+	}
+	if len(state.PendingProjects) > 0 {
+		return true
+	}
+
+	return false
+}
+
+func (m *DefaultLayerStateManager) AdvanceLayer(
+	pullStatus *models.PullStatus,
+) (*models.LayerState, []string, error) {
+	state := pullStatus.LayerState
+	if state == nil {
+		return nil, nil, fmt.Errorf("no layer state to advance")
+	}
+
+	completedLayer := state.CurrentLayer
+
+	// Determine which completed-layer projects had actual changes
+	projectsWithChanges := make(map[string]bool)
+	for _, proj := range pullStatus.Projects {
+		if proj.Layer == completedLayer && proj.Status == models.AppliedStatus {
+			projectsWithChanges[projectStatusKey(proj)] = true
+		}
+	}
+
+	// Collect projects already assigned to the next layer (from initialization)
+	nextLayer := completedLayer + 1
+	var nextLayerProjects []string
+	for name, layer := range state.ProjectLayers {
+		if layer == nextLayer {
+			nextLayerProjects = append(nextLayerProjects, name)
+		}
+	}
+
+	// Evaluate pending projects for the next layer
+	var stillPending []string
+
+	for _, pendingProject := range state.PendingProjects {
+		deps := state.DependencyGraph[pendingProject]
+		shouldInclude := false
+		allDepsResolved := true
+
+		for _, dep := range deps {
+			depLayer, assigned := state.ProjectLayers[dep]
+			if !assigned {
+				// This dependency hasn't been planned yet, can't evaluate
+				allDepsResolved = false
+				continue
+			}
+			if depLayer > completedLayer {
+				// Dependency is in a future layer, can't evaluate yet
+				allDepsResolved = false
+				continue
+			}
+			// Check if this dependency was skipped
+			if state.SkippedUpstreams[dep] {
+				shouldInclude = false
+				allDepsResolved = true
+				break // Skip takes precedence
+			}
+			// Check if this dependency had actual changes
+			if projectsWithChanges[dep] {
+				shouldInclude = true
+			}
+		}
+
+		if state.SkippedUpstreams[pendingProject] {
+			continue // Already marked as excluded
+		}
+
+		if !allDepsResolved {
+			stillPending = append(stillPending, pendingProject)
+		} else if shouldInclude {
+			state.ProjectLayers[pendingProject] = nextLayer
+			nextLayerProjects = append(nextLayerProjects, pendingProject)
+		}
+		// If allDepsResolved && !shouldInclude, the project is simply dropped
+		// (cascade stopped because upstream had no changes)
+	}
+
+	state.PendingProjects = stillPending
+
+	nextLayerProjects = deduplicate(nextLayerProjects)
+
+	if len(nextLayerProjects) > 0 {
+		state.CurrentLayer = nextLayer
+		if nextLayer >= state.TotalLayers {
+			state.TotalLayers = nextLayer + 1
+		}
+	} else if len(stillPending) == 0 {
+		// No more projects to plan - all done
+		state.CurrentLayer = -1
+	} else {
+		// There are still pending projects but none are ready yet
+		state.CurrentLayer = nextLayer
+	}
+
+	return state, nextLayerProjects, nil
+}
+
+func (m *DefaultLayerStateManager) SkipProject(
+	pullStatus *models.PullStatus,
+	projectName string,
+	skipEnabled bool,
+) (*models.PullStatus, error) {
+	if !skipEnabled {
+		return nil, fmt.Errorf("skip functionality is not enabled (enable-layered-apply-skip)")
+	}
+
+	state := pullStatus.LayerState
+	if state == nil {
+		return nil, fmt.Errorf("layered planning is not active for this pull request")
+	}
+
+	// Validate: project must be in current layer
+	projLayer, ok := state.ProjectLayers[projectName]
+	if !ok || projLayer != state.CurrentLayer {
+		return nil, fmt.Errorf("project %q is not in the current layer (%d)", projectName, state.CurrentLayer)
+	}
+
+	// Validate: project must have failed apply
+	var proj *models.ProjectStatus
+	for i := range pullStatus.Projects {
+		if projectStatusKey(pullStatus.Projects[i]) == projectName {
+			proj = &pullStatus.Projects[i]
+			break
+		}
+	}
+	if proj == nil {
+		return nil, fmt.Errorf("project %q not found in pull status", projectName)
+	}
+	if proj.Status != models.ErroredApplyStatus {
+		return nil, fmt.Errorf("can only skip projects with failed applies (current status: %s)", proj.Status)
+	}
+
+	// Update status
+	proj.Status = models.SkippedPlanStatus
+
+	// Mark in skipped upstreams so cascade evaluation excludes dependents
+	if state.SkippedUpstreams == nil {
+		state.SkippedUpstreams = make(map[string]bool)
+	}
+	state.SkippedUpstreams[projectName] = true
+
+	// Also mark all transitive dependents as excluded
+	m.markDependentsExcluded(state, projectName)
+
+	return pullStatus, nil
+}
+
+// markDependentsExcluded recursively marks all downstream dependents of a
+// skipped project as excluded.
+func (m *DefaultLayerStateManager) markDependentsExcluded(
+	state *models.LayerState,
+	projectName string,
+) {
+	reverseDeps := buildReverseDependencyMap(state.DependencyGraph)
+	var exclude func(name string)
+	exclude = func(name string) {
+		for _, dep := range reverseDeps[name] {
+			state.SkippedUpstreams[dep] = true
+			// Remove from pending if present
+			for i, p := range state.PendingProjects {
+				if p == dep {
+					state.PendingProjects = append(
+						state.PendingProjects[:i],
+						state.PendingProjects[i+1:]...,
+					)
+					break
+				}
+			}
+			exclude(dep) // recursive
+		}
+	}
+	exclude(projectName)
+}
+
+func (m *DefaultLayerStateManager) HandleNewCommit(
+	pullStatus *models.PullStatus,
+	affectedProjects []string,
+) ResetAction {
+	state := pullStatus.LayerState
+	if state == nil {
+		return ResetAction{NoAction: true}
+	}
+
+	var replanProjects []string
+	resetToLayer := -1
+
+	for _, projName := range affectedProjects {
+		layer, assigned := state.ProjectLayers[projName]
+		if !assigned {
+			// Project is pending (future layer) - no action needed
+			continue
+		}
+
+		if layer > state.CurrentLayer {
+			// Future layer - will be planned naturally
+			continue
+		}
+
+		if layer == state.CurrentLayer {
+			// Current layer - check project status
+			for _, proj := range pullStatus.Projects {
+				if projectStatusKey(proj) == projName {
+					if proj.Status == models.AppliedStatus {
+						// Already applied in current layer - need reset
+						if resetToLayer == -1 || layer < resetToLayer {
+							resetToLayer = layer
+						}
+					} else {
+						replanProjects = append(replanProjects, projName)
+					}
+				}
+			}
+			continue
+		}
+
+		// Already-applied layer - need to reset back
+		if resetToLayer == -1 || layer < resetToLayer {
+			resetToLayer = layer
+		}
+	}
+
+	if resetToLayer >= 0 {
+		return ResetAction{ResetToLayer: resetToLayer}
+	}
+
+	if len(replanProjects) > 0 {
+		return ResetAction{
+			ResetToLayer:   -1,
+			ReplanProjects: replanProjects,
+		}
+	}
+
+	return ResetAction{NoAction: true}
+}
+
+// ResetLayerState rolls back the layer state to the specified layer.
+// Projects in layers >= resetToLayer are removed from ProjectLayers and
+// moved back to PendingProjects. CurrentLayer is set to resetToLayer
+// and TotalLayers is decremented accordingly.
+func (m *DefaultLayerStateManager) ResetLayerState(state *models.LayerState, resetToLayer int) error {
+	if state == nil {
+		return fmt.Errorf("no layer state to reset")
+	}
+	if resetToLayer < 0 || resetToLayer >= state.TotalLayers {
+		return fmt.Errorf("invalid reset layer %d (total layers: %d)", resetToLayer, state.TotalLayers)
+	}
+
+	// Move projects in layers >= resetToLayer back to PendingProjects
+	for projName, layer := range state.ProjectLayers {
+		if layer >= resetToLayer {
+			state.PendingProjects = append(state.PendingProjects, projName)
+			delete(state.ProjectLayers, projName)
+		}
+	}
+	state.PendingProjects = deduplicate(state.PendingProjects)
+
+	// Reset current layer and total layers
+	state.CurrentLayer = resetToLayer
+	state.TotalLayers = resetToLayer
+
+	// Clear skipped upstreams for invalidated projects (those no longer assigned)
+	for projName := range state.SkippedUpstreams {
+		if _, assigned := state.ProjectLayers[projName]; !assigned {
+			delete(state.SkippedUpstreams, projName)
+		}
+	}
+
+	return nil
+}
+
+func (m *DefaultLayerStateManager) IsAllComplete(pullStatus *models.PullStatus) bool {
+	state := pullStatus.LayerState
+	if state == nil {
+		return true
+	}
+	return state.CurrentLayer == -1
+}
+
+func (m *DefaultLayerStateManager) GetLayerSummary(pullStatus *models.PullStatus) []LayerSummary {
+	state := pullStatus.LayerState
+	if state == nil {
+		return nil
+	}
+
+	summaries := make([]LayerSummary, state.TotalLayers)
+	for i := 0; i < state.TotalLayers; i++ {
+		summaries[i] = LayerSummary{
+			Layer:     i,
+			IsCurrent: i == state.CurrentLayer,
+		}
+	}
+
+	// Assign projects to their layers
+	seenProjects := make(map[string]bool)
+	for _, proj := range pullStatus.Projects {
+		if proj.Layer >= 0 && proj.Layer < state.TotalLayers {
+			summaries[proj.Layer].Projects = append(summaries[proj.Layer].Projects, proj)
+			seenProjects[projectStatusKey(proj)] = true
+		}
+	}
+
+	// For the current layer, add placeholder entries for projects that are
+	// assigned to this layer but don't have results yet (planning in progress).
+	// The zero-value PendingPlanStatus renders as "Planning..." on the dashboard.
+	for projectKey, layer := range state.ProjectLayers {
+		if layer == state.CurrentLayer && !seenProjects[projectKey] {
+			summaries[layer].Projects = append(summaries[layer].Projects, models.ProjectStatus{
+				ProjectName: projectKey,
+				Layer:       layer,
+			})
+		}
+	}
+
+	// Determine completeness
+	for i := range summaries {
+		complete, _ := m.IsLayerComplete(pullStatus, i)
+		summaries[i].IsComplete = complete
+	}
+
+	return summaries
+}
+
+func (m *DefaultLayerStateManager) StampLayerAssignments(pullStatus *models.PullStatus) {
+	if pullStatus.LayerState == nil {
+		return
+	}
+	for i := range pullStatus.Projects {
+		proj := &pullStatus.Projects[i]
+		if layer, ok := pullStatus.LayerState.ProjectLayers[projectStatusKey(*proj)]; ok {
+			proj.Layer = layer
+		}
+	}
+}
