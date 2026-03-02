@@ -294,8 +294,8 @@ func TestRenderSplit_ExceedsLimit(t *testing.T) {
 }
 
 func TestRenderSplit_SingleHugeLayer(t *testing.T) {
-	// Test the truncation fallback by calling splitAtLayerBoundaries directly
-	// with a single section that exceeds maxLen.
+	// Test mid-layer splitting by calling splitAtLayerBoundaries directly
+	// with a single layer section that exceeds maxLen.
 	hugeContent := DashboardSentinel + "\n## Layered Planning Dashboard\n\n**Layer 1** _(current)_\n"
 	for i := 0; i < 100; i++ {
 		hugeContent += fmt.Sprintf("- item %d with some long content to make it big\n", i)
@@ -303,32 +303,48 @@ func TestRenderSplit_SingleHugeLayer(t *testing.T) {
 
 	result := splitAtLayerBoundaries(hugeContent, 200)
 
-	// Because the header and the layer section are separate sections,
-	// they should be split across multiple comments. Each part should
-	// be within the limit.
+	// Should split into multiple parts, all within limit
+	if len(result) < 2 {
+		t.Errorf("expected at least 2 parts, got %d", len(result))
+	}
 	for i, part := range result {
 		if len(part) > 200 {
-			// If a single section exceeds the limit, it should be truncated
-			if !strings.Contains(part, "... (dashboard truncated)") {
-				t.Errorf("part %d exceeds limit but lacks truncation marker", i+1)
-			}
+			t.Errorf("part %d exceeds maxLen: %d > 200", i+1, len(part))
 		}
+	}
+
+	// All content should be preserved (no truncation)
+	fullResult := strings.Join(result, "")
+	if strings.Contains(fullResult, "... (dashboard truncated)") {
+		t.Error("should split mid-layer instead of truncating")
 	}
 }
 
 func TestSplitAtLayerBoundaries_UnsplittableSingleSection(t *testing.T) {
-	// A single long string with no layer boundaries should truncate.
+	// A single long string with no layer boundaries should be split across parts.
 	longContent := strings.Repeat("x", 500)
 	result := splitAtLayerBoundaries(longContent, 200)
 
-	if len(result) != 1 {
-		t.Errorf("expected 1 truncated result, got %d", len(result))
+	// Should split into multiple parts, all within limit
+	if len(result) < 2 {
+		t.Errorf("expected at least 2 parts, got %d", len(result))
 	}
-	if !strings.Contains(result[0], "... (dashboard truncated)") {
-		t.Error("expected truncation marker")
+	for i, part := range result {
+		if len(part) > 200 {
+			t.Errorf("part %d exceeds maxLen: %d > 200", i+1, len(part))
+		}
 	}
-	if len(result[0]) > 200 {
-		t.Errorf("result exceeds maxLen: %d > 200", len(result[0]))
+
+	// All original content should be preserved (strip sentinels and continuation indicators)
+	fullResult := strings.Join(result, "")
+	for i := 2; i <= 10; i++ {
+		sentinel := fmt.Sprintf(DashboardContinuedSentinelFmt, i) + "\n"
+		fullResult = strings.ReplaceAll(fullResult, sentinel, "")
+	}
+	fullResult = strings.ReplaceAll(fullResult, ContinuedOnNext, "")
+	fullResult = strings.ReplaceAll(fullResult, ContinuedFromPrev, "")
+	if len(fullResult) != 500 {
+		t.Errorf("expected all content preserved (500 chars), got %d", len(fullResult))
 	}
 }
 
@@ -364,6 +380,85 @@ even more content
 		if !strings.HasPrefix(sections[i], "**Layer ") {
 			t.Errorf("section %d should start with '**Layer ', got: %q", i, sections[i][:20])
 		}
+	}
+}
+
+func TestSplitAtLayerBoundaries_MidLayerSplit(t *testing.T) {
+	// Create content where layer 2 alone exceeds maxLen
+	header := DashboardSentinel + "\n## Layered Planning Dashboard\n\n"
+	layer1 := "**Layer 1** — 1 applied\n- item\n\n"
+
+	// Layer 2 has many items exceeding limit
+	layer2 := "**Layer 2** _(current)_\n"
+	for i := 0; i < 50; i++ {
+		layer2 += fmt.Sprintf("- project-%d-with-long-name\n", i)
+	}
+
+	layer3 := "**Layer 3**\n- pending\n"
+
+	content := header + layer1 + layer2 + layer3
+	maxLen := 500
+
+	result := splitAtLayerBoundaries(content, maxLen)
+
+	// Should have multiple parts
+	if len(result) < 2 {
+		t.Fatalf("expected at least 2 parts, got %d", len(result))
+	}
+
+	// All parts should be within limit
+	for i, part := range result {
+		if len(part) > maxLen {
+			t.Errorf("part %d exceeds maxLen: %d > %d", i+1, len(part), maxLen)
+		}
+	}
+
+	// Should NOT contain truncation marker - all content preserved
+	fullResult := strings.Join(result, "")
+	if strings.Contains(fullResult, "... (dashboard truncated)") {
+		t.Error("should not truncate, should split mid-layer instead")
+	}
+
+	// Layer 3 should still be present in the final output
+	if !strings.Contains(fullResult, "**Layer 3**") {
+		t.Error("Layer 3 should be preserved, not lost to truncation")
+	}
+}
+
+func TestSplitAtLayerBoundaries_ContinuationIndicators(t *testing.T) {
+	// Create a layer that must split mid-layer
+	header := DashboardSentinel + "\n## Layered Planning Dashboard\n\n"
+	layer1 := "**Layer 1** _(current)_\n"
+	for i := 0; i < 30; i++ {
+		layer1 += fmt.Sprintf("- project-%d\n", i)
+	}
+
+	content := header + layer1
+	maxLen := 300
+
+	result := splitAtLayerBoundaries(content, maxLen)
+
+	if len(result) < 3 {
+		t.Fatalf("expected at least 3 parts (header + split layer), got %d", len(result))
+	}
+
+	// Find the first part that contains layer content and is continued
+	hasContinuedOn := false
+	hasContinuedFrom := false
+	for _, part := range result {
+		if strings.Contains(part, "_(continued on next comment)_") {
+			hasContinuedOn = true
+		}
+		if strings.Contains(part, "_(continued from previous comment)_") {
+			hasContinuedFrom = true
+		}
+	}
+
+	if !hasContinuedOn {
+		t.Error("split layer should have 'continued on next comment' indicator")
+	}
+	if !hasContinuedFrom {
+		t.Error("continued part should have 'continued from previous comment' indicator")
 	}
 }
 

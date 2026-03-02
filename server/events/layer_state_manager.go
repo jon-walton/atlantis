@@ -5,6 +5,7 @@ package events
 
 import (
 	"fmt"
+	"sort"
 
 	"github.com/runatlantis/atlantis/server/events/models"
 )
@@ -572,6 +573,13 @@ func (m *DefaultLayerStateManager) GetLayerSummary(pullStatus *models.PullStatus
 				Layer:       layer,
 			})
 		}
+	}
+
+	// Sort projects within each layer for deterministic ordering
+	for i := range summaries {
+		sort.Slice(summaries[i].Projects, func(a, b int) bool {
+			return projectStatusKey(summaries[i].Projects[a]) < projectStatusKey(summaries[i].Projects[b])
+		})
 	}
 
 	// Determine completeness

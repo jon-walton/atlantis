@@ -2,12 +2,16 @@ package layers
 
 import (
 	"fmt"
+	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/runatlantis/atlantis/server/events/models"
 	"github.com/runatlantis/atlantis/server/events/vcs"
 	"github.com/runatlantis/atlantis/server/logging"
 )
+
+var continuedSentinelRegex = regexp.MustCompile(`<!-- Atlantis Layered Planning Dashboard \(continued (\d+)\) -->`)
 
 // DashboardUpdater manages the lifecycle of sticky dashboard comments.
 type DashboardUpdater struct {
@@ -88,7 +92,31 @@ func (u *DashboardUpdater) findDashboardComments(
 		}
 	}
 
+	// Sort by sentinel number: primary (1) first, then continued 2, 3, etc.
+	sort.Slice(dashboardComments, func(i, j int) bool {
+		return parseSentinelNumber(dashboardComments[i].Body) < parseSentinelNumber(dashboardComments[j].Body)
+	})
+
 	return dashboardComments, nil
+}
+
+// parseSentinelNumber extracts the comment part number from the sentinel.
+// Returns 1 for the primary dashboard comment, or the continued number.
+func parseSentinelNumber(body string) int {
+	// Check for continued sentinel first (it also contains the base sentinel text)
+	matches := continuedSentinelRegex.FindStringSubmatch(body)
+	if len(matches) >= 2 {
+		var num int
+		fmt.Sscanf(matches[1], "%d", &num)
+		return num
+	}
+
+	// Primary sentinel = part 1
+	if strings.Contains(body, DashboardSentinel) {
+		return 1
+	}
+
+	return 9999 // Unknown, sort to end
 }
 
 // isDashboardComment returns true if the comment body contains a dashboard sentinel.

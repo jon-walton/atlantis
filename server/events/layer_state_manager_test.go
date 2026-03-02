@@ -1311,3 +1311,48 @@ func TestLayerStateLifecycle_SkipAndCascadeStop(t *testing.T) {
 	// CanAdvance should return false since there are no pending projects left
 	Equals(t, false, m.CanAdvance(pullStatus))
 }
+
+func TestGetLayerSummary_DeterministicOrdering(t *testing.T) {
+	m := NewLayerStateManager()
+	pullStatus := &models.PullStatus{
+		LayerState: &models.LayerState{
+			Enabled:      true,
+			CurrentLayer: 0,
+			TotalLayers:  1,
+			ProjectLayers: map[string]int{
+				"zebra":  0,
+				"alpha":  0,
+				"middle": 0,
+			},
+		},
+		Projects: []models.ProjectStatus{},
+	}
+
+	// Run multiple times to catch non-deterministic behavior
+	var firstOrder []string
+	for i := 0; i < 10; i++ {
+		summaries := m.GetLayerSummary(pullStatus)
+		var names []string
+		for _, p := range summaries[0].Projects {
+			names = append(names, p.ProjectName)
+		}
+		if i == 0 {
+			firstOrder = names
+		} else {
+			for j, name := range names {
+				if name != firstOrder[j] {
+					t.Fatalf("iteration %d: order changed from %v to %v", i, firstOrder, names)
+				}
+			}
+		}
+	}
+
+	// Should be alphabetically sorted
+	expected := []string{"alpha", "middle", "zebra"}
+	for i, name := range firstOrder {
+		if name != expected[i] {
+			t.Errorf("expected %v, got %v", expected, firstOrder)
+			break
+		}
+	}
+}

@@ -15,6 +15,10 @@ const (
 	DashboardSentinel = "<!-- Atlantis Layered Planning Dashboard -->"
 	// DashboardContinuedSentinelFmt is the format string for continued dashboard comments.
 	DashboardContinuedSentinelFmt = "<!-- Atlantis Layered Planning Dashboard (continued %d) -->"
+	// ContinuedOnNext is appended when a layer continues in the next comment.
+	ContinuedOnNext = "\n\n_(continued on next comment)_"
+	// ContinuedFromPrev is prepended when a layer continues from the previous comment.
+	ContinuedFromPrev = "_(continued from previous comment)_\n\n"
 )
 
 //go:embed templates/layered_dashboard.tmpl
@@ -79,14 +83,11 @@ func (r *DashboardRenderer) RenderSplit(data DashboardData, maxLen int) []string
 
 // splitAtLayerBoundaries splits a rendered dashboard at layer boundaries.
 // Each resulting part is guaranteed to be <= maxLen.
-// If a single layer exceeds maxLen on its own, it falls back to truncation.
+// If a single layer exceeds maxLen, it splits mid-layer to preserve all content.
 func splitAtLayerBoundaries(rendered string, maxLen int) []string {
 	sections := splitIntoLayerSections(rendered)
 
-	if len(sections) <= 1 {
-		if len(rendered) > maxLen {
-			return []string{rendered[:maxLen-50] + "\n\n... (dashboard truncated)"}
-		}
+	if len(sections) == 0 {
 		return []string{rendered}
 	}
 
@@ -102,6 +103,7 @@ func splitAtLayerBoundaries(rendered string, maxLen int) []string {
 
 		proposedLen := current.Len() + len(sentinel) + len(section)
 
+		// If adding this section would exceed limit and we have content, flush
 		if current.Len() > 0 && proposedLen > maxLen {
 			comments = append(comments, strings.TrimSpace(current.String()))
 			current.Reset()
@@ -109,22 +111,98 @@ func splitAtLayerBoundaries(rendered string, maxLen int) []string {
 			sentinel = fmt.Sprintf(DashboardContinuedSentinelFmt, partNum) + "\n"
 		}
 
+		// Add sentinel if starting a new non-first part
 		if current.Len() == 0 && i > 0 {
 			current.WriteString(sentinel)
 		}
-		current.WriteString(section)
+
+		// Check if this single section exceeds maxLen
+		if len(section)+current.Len() > maxLen {
+			// Split the section itself across multiple comments
+			sectionParts := splitLargeSection(section, maxLen-current.Len(), maxLen, partNum)
+			for j, sp := range sectionParts {
+				if j == 0 {
+					current.WriteString(sp)
+				} else {
+					// Flush current and start new part
+					comments = append(comments, strings.TrimSpace(current.String()))
+					current.Reset()
+					partNum++
+					current.WriteString(sp)
+				}
+			}
+		} else {
+			current.WriteString(section)
+		}
 	}
 
 	if current.Len() > 0 {
-		result := strings.TrimSpace(current.String())
-		// If this final part exceeds maxLen and we can't split further, truncate.
-		if len(result) > maxLen {
-			result = result[:maxLen-50] + "\n\n... (dashboard truncated)"
-		}
-		comments = append(comments, result)
+		comments = append(comments, strings.TrimSpace(current.String()))
 	}
 
 	return comments
+}
+
+// splitLargeSection splits a section that exceeds maxLen into multiple parts.
+// firstPartLen is the available space in the current comment.
+// Adds continuation indicators when splitting within a layer.
+// Returns parts with appropriate continued sentinels.
+func splitLargeSection(section string, firstPartLen int, maxLen int, startPartNum int) []string {
+	if len(section) <= firstPartLen {
+		return []string{section}
+	}
+
+	var parts []string
+	remaining := section
+	partNum := startPartNum
+	isFirst := true
+
+	for len(remaining) > 0 {
+		availableLen := maxLen
+		prefix := ""
+
+		if isFirst {
+			// Reserve space for "continued on next" indicator
+			availableLen = firstPartLen - len(ContinuedOnNext)
+			isFirst = false
+		} else {
+			// Add continued sentinel and "from previous" indicator
+			sentinel := fmt.Sprintf(DashboardContinuedSentinelFmt, partNum) + "\n"
+			prefix = sentinel + ContinuedFromPrev
+			availableLen = maxLen - len(prefix) - len(ContinuedOnNext)
+		}
+
+		if availableLen <= 0 {
+			availableLen = 50 // Minimum to make progress
+		}
+
+		// Find a good split point (prefer line boundary)
+		splitAt := availableLen
+		if splitAt >= len(remaining) {
+			// This is the last part, no "continued on next" needed
+			if prefix != "" {
+				remaining = prefix + remaining
+			}
+			parts = append(parts, remaining)
+			break
+		}
+
+		// Look for last newline before splitAt
+		lastNewline := strings.LastIndex(remaining[:splitAt], "\n")
+		if lastNewline > splitAt/2 { // Only use if it's not too far back
+			splitAt = lastNewline + 1
+		}
+
+		part := remaining[:splitAt] + ContinuedOnNext
+		if prefix != "" {
+			part = prefix + part
+		}
+		parts = append(parts, part)
+		remaining = remaining[splitAt:]
+		partNum++
+	}
+
+	return parts
 }
 
 // splitIntoLayerSections splits the rendered dashboard into sections,

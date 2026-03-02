@@ -292,6 +292,153 @@ func TestUpdate_SplitAndUpdate(t *testing.T) {
 	}
 }
 
+func TestFindDashboardComments_SortsBySentinelNumber(t *testing.T) {
+	// Simulate comments returned out of order
+	client := newFakeVCSClient()
+	client.comments = []vcs.PullComment{
+		{ID: 300, Body: fmt.Sprintf(DashboardContinuedSentinelFmt, 3) + "\npart 3"},
+		{ID: 100, Body: DashboardSentinel + "\npart 1"},
+		{ID: 200, Body: fmt.Sprintf(DashboardContinuedSentinelFmt, 2) + "\npart 2"},
+	}
+	u := &DashboardUpdater{VCSClient: client}
+
+	result, err := u.findDashboardComments(testLogger(t), testRepo(), 1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should be sorted: primary (1), continued 2, continued 3
+	if len(result) != 3 {
+		t.Fatalf("expected 3 comments, got %d", len(result))
+	}
+	if result[0].ID != 100 {
+		t.Errorf("expected first comment ID 100 (primary), got %d", result[0].ID)
+	}
+	if result[1].ID != 200 {
+		t.Errorf("expected second comment ID 200 (continued 2), got %d", result[1].ID)
+	}
+	if result[2].ID != 300 {
+		t.Errorf("expected third comment ID 300 (continued 3), got %d", result[2].ID)
+	}
+}
+
+func TestUpdate_SplitWorkflow_Integration(t *testing.T) {
+	client := newFakeVCSClient()
+	// Use a small maxLen to force splitting
+	client.maxLen = 500
+	renderer := NewDashboardRenderer("")
+
+	// Create data that will require splitting: 2 layers with many projects
+	var layer1Projects, layer2Projects []DashboardProject
+	for i := 0; i < 25; i++ {
+		layer1Projects = append(layer1Projects, DashboardProject{
+			Name:   fmt.Sprintf("project-%02d", i),
+			Status: NewDashboardStatus(models.PlannedPlanStatus),
+		})
+		layer2Projects = append(layer2Projects, DashboardProject{
+			Name:   fmt.Sprintf("project-%02d", i+25),
+			Status: NewDashboardStatus(models.PendingPlanStatus),
+		})
+	}
+
+	data := DashboardData{
+		Layers: []DashboardLayer{
+			{Number: 1, IsCurrent: false, Projects: layer1Projects},
+			{Number: 2, IsCurrent: true, Projects: layer2Projects},
+		},
+	}
+
+	updater := &DashboardUpdater{
+		VCSClient: client,
+		Renderer:  renderer,
+	}
+
+	// --- First update: creates multiple comments ---
+	err := updater.Update(testLogger(t), testRepo(), 1, data)
+	if err != nil {
+		t.Fatalf("first update failed: %v", err)
+	}
+
+	initialCount := len(client.createdComments)
+	if initialCount < 2 {
+		t.Fatalf("expected at least 2 comments created, got %d", initialCount)
+	}
+
+	// All parts should be within maxLen
+	for i, part := range client.createdComments {
+		if len(part) > client.maxLen {
+			t.Errorf("part %d exceeds maxLen: %d > %d", i+1, len(part), client.maxLen)
+		}
+	}
+
+	// Save the first render for idempotency check
+	firstRender := make([]string, len(client.createdComments))
+	copy(firstRender, client.createdComments)
+
+	// --- Second update: simulate existing comments, should update in place ---
+	// Convert created comments into existing pull comments with IDs
+	client.comments = nil
+	for i, body := range firstRender {
+		client.comments = append(client.comments, vcs.PullComment{
+			ID:   int64(100 + i),
+			Body: body,
+		})
+	}
+	client.createdComments = nil
+	client.editedComments = make(map[int64]string)
+
+	err = updater.Update(testLogger(t), testRepo(), 1, data)
+	if err != nil {
+		t.Fatalf("second update failed: %v", err)
+	}
+
+	// Should have edited existing comments, not created new ones
+	if len(client.createdComments) > 0 {
+		t.Errorf("expected edits only on re-render, but got %d new comments", len(client.createdComments))
+	}
+	if len(client.editedComments) != initialCount {
+		t.Errorf("expected %d edits, got %d", initialCount, len(client.editedComments))
+	}
+
+	// Content should be identical on re-render (idempotent)
+	if body, ok := client.editedComments[100]; ok {
+		if body != firstRender[0] {
+			t.Error("first comment content should be identical on re-render (idempotent)")
+		}
+	}
+
+	// --- Verify all content is preserved (no truncation) ---
+	allContent := strings.Join(firstRender, "\n")
+	if strings.Contains(allContent, "truncated") {
+		t.Error("should not truncate, should split mid-layer instead")
+	}
+
+	// Layer 2 should be present somewhere in the output
+	if !strings.Contains(allContent, "Layer 2") {
+		t.Error("Layer 2 should be preserved in the split output")
+	}
+
+	// --- Verify continuation indicators appear in pairs ---
+	hasContinuedOn := strings.Contains(allContent, "continued on next comment")
+	hasContinuedFrom := strings.Contains(allContent, "continued from previous comment")
+	if hasContinuedOn != hasContinuedFrom {
+		t.Error("continuation indicators should appear in pairs: 'continued on next' and 'continued from previous'")
+	}
+
+	// --- Verify sentinel ordering ---
+	// First comment should have the primary sentinel
+	if !strings.Contains(firstRender[0], DashboardSentinel) {
+		t.Error("first comment should contain primary dashboard sentinel")
+	}
+	// Subsequent comments should have continued sentinels
+	for i := 1; i < len(firstRender); i++ {
+		expectedSentinel := fmt.Sprintf(DashboardContinuedSentinelFmt, i+1)
+		if !strings.Contains(firstRender[i], expectedSentinel) {
+			t.Errorf("comment %d should contain continued sentinel %d", i+1, i+1)
+		}
+	}
+}
+
 func TestNewDashboardUpdater(t *testing.T) {
 	client := newFakeVCSClient()
 	updater := NewDashboardUpdater(client, "")
