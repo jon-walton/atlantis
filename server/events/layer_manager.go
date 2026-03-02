@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/runatlantis/atlantis/server/events/command"
+	"github.com/runatlantis/atlantis/server/events/layered"
 	"github.com/runatlantis/atlantis/server/events/layers"
 	"github.com/runatlantis/atlantis/server/events/models"
 )
@@ -47,18 +48,24 @@ func (lm *LayerManager) ShouldActivate(projectCmds []command.ProjectContext) boo
 func (lm *LayerManager) InitializeLayerState(
 	projectCmds []command.ProjectContext,
 ) (*models.LayerState, error) {
-	// Build dependency graph and changed-projects map from project contexts
-	depGraph := make(map[string][]string)
-	changedProjects := make(map[string]bool)
-
-	// First collect all projects and their dependencies
+	// Build project nodes for the typed graph
+	var nodes []layered.ProjectNode
 	for _, cmd := range projectCmds {
 		key := projectContextKey(cmd)
-		depGraph[key] = cmd.DependsOn
-		changedProjects[key] = true
+		nodes = append(nodes, layered.ProjectNode{
+			ID:             layered.ProjectID(key),
+			DependsOn:      toProjectIDs(cmd.DependsOn),
+			HasFileChanges: true,
+		})
 	}
 
-	// Build project statuses for the state manager
+	// Construct and validate the typed graph
+	graph, err := layered.NewDependencyGraph(nodes)
+	if err != nil {
+		return nil, fmt.Errorf("building dependency graph: %w", err)
+	}
+
+	// Build project statuses
 	var projectStatuses []models.ProjectStatus
 	for _, cmd := range projectCmds {
 		if cmd.CommandName != command.Plan {
@@ -71,21 +78,24 @@ func (lm *LayerManager) InitializeLayerState(
 		})
 	}
 
-	state, err := lm.stateManager.InitializeLayerState(
-		projectStatuses,
-		depGraph,
-		changedProjects,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("initializing layer state: %w", err)
-	}
+	return lm.stateManager.InitializeLayerState(projectStatuses, graph), nil
+}
 
-	return state, nil
+// toProjectIDs converts a slice of strings to a slice of ProjectIDs.
+func toProjectIDs(deps []string) []layered.ProjectID {
+	if deps == nil {
+		return nil
+	}
+	result := make([]layered.ProjectID, len(deps))
+	for i, d := range deps {
+		result[i] = layered.ProjectID(d)
+	}
+	return result
 }
 
 // HasMultipleLayers returns true if the layer state has more than one layer.
 func (lm *LayerManager) HasMultipleLayers(state *models.LayerState) bool {
-	if state == nil {
+	if !state.Enabled() {
 		return false
 	}
 	return state.TotalLayers > 1

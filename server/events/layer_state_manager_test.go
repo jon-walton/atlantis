@@ -7,9 +7,22 @@ import (
 	"sort"
 	"testing"
 
+	"github.com/runatlantis/atlantis/server/events/layered"
 	"github.com/runatlantis/atlantis/server/events/models"
 	. "github.com/runatlantis/atlantis/testing"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+// mustBuildGraph creates a graph for testing, panics on error.
+func mustBuildGraph(t *testing.T, nodes []layered.ProjectNode) *layered.DependencyGraph {
+	t.Helper()
+	g, err := layered.NewDependencyGraph(nodes)
+	if err != nil {
+		t.Fatalf("failed to build graph: %v", err)
+	}
+	return g
+}
 
 // --- InitializeLayerState tests ---
 
@@ -17,169 +30,166 @@ func TestLayerStateInit_NoDependencies(t *testing.T) {
 	t.Log("should return nil when no dependencies exist")
 	m := NewLayerStateManager()
 
-	projects := []models.ProjectStatus{
-		{ProjectName: "A"},
-		{ProjectName: "B"},
-		{ProjectName: "C"},
+	nodes := []layered.ProjectNode{
+		{ID: "a", HasFileChanges: true},
+		{ID: "b", HasFileChanges: true},
+		{ID: "c", HasFileChanges: true},
 	}
-	graph := map[string][]string{
-		"A": {},
-		"B": {},
-		"C": {},
-	}
-	changed := map[string]bool{"A": true, "B": true, "C": true}
+	graph, err := layered.NewDependencyGraph(nodes)
+	require.NoError(t, err)
 
-	state, err := m.InitializeLayerState(projects, graph, changed)
-	Ok(t, err)
+	projects := []models.ProjectStatus{
+		{ProjectName: "a"},
+		{ProjectName: "b"},
+		{ProjectName: "c"},
+	}
+
+	state := m.InitializeLayerState(projects, graph)
 	Assert(t, state == nil, "expected nil state when no deps")
 }
 
-func TestLayerStateInit_SimpleChainAllChanged(t *testing.T) {
-	t.Log("A -> B -> C, all changed: 3 layers")
-	m := NewLayerStateManager()
+func TestInitializeLayerState_WithDependencies(t *testing.T) {
+	manager := NewLayerStateManager()
+
+	nodes := []layered.ProjectNode{
+		{ID: "a", DependsOn: nil, HasFileChanges: true},
+		{ID: "b", DependsOn: []layered.ProjectID{"a"}, HasFileChanges: true},
+		{ID: "c", DependsOn: []layered.ProjectID{"b"}, HasFileChanges: true},
+	}
+	graph, err := layered.NewDependencyGraph(nodes)
+	require.NoError(t, err)
 
 	projects := []models.ProjectStatus{
-		{ProjectName: "A"},
-		{ProjectName: "B"},
-		{ProjectName: "C"},
+		{ProjectName: "a"},
+		{ProjectName: "b"},
+		{ProjectName: "c"},
 	}
-	graph := map[string][]string{
-		"A": {},
-		"B": {"A"},
-		"C": {"B"},
-	}
-	changed := map[string]bool{"A": true, "B": true, "C": true}
 
-	state, err := m.InitializeLayerState(projects, graph, changed)
-	Ok(t, err)
-	Assert(t, state != nil, "expected non-nil state")
-	Equals(t, true, state.Enabled)
-	Equals(t, 0, state.CurrentLayer)
-	Equals(t, 3, state.TotalLayers)
-	Equals(t, 0, state.ProjectLayers["A"])
-	Equals(t, 1, state.ProjectLayers["B"])
-	Equals(t, 2, state.ProjectLayers["C"])
+	state := manager.InitializeLayerState(projects, graph)
+	require.NotNil(t, state)
+
+	assert.Equal(t, 0, state.ProjectLayers["a"])
+	assert.Equal(t, 1, state.ProjectLayers["b"])
+	assert.Equal(t, 2, state.ProjectLayers["c"])
+	assert.Equal(t, 3, state.TotalLayers)
+	assert.Same(t, graph, state.Graph)
 }
 
 func TestLayerStateInit_SimpleChainOnlyRootChanged(t *testing.T) {
 	t.Log("A -> B -> C, only A changed: layer 0 has A, B and C are pending")
 	m := NewLayerStateManager()
 
-	projects := []models.ProjectStatus{
-		{ProjectName: "A"},
+	nodes := []layered.ProjectNode{
+		{ID: "a", HasFileChanges: true},
+		{ID: "b", DependsOn: []layered.ProjectID{"a"}, HasFileChanges: false},
+		{ID: "c", DependsOn: []layered.ProjectID{"b"}, HasFileChanges: false},
 	}
-	graph := map[string][]string{
-		"A": {},
-		"B": {"A"},
-		"C": {"B"},
-	}
-	changed := map[string]bool{"A": true}
+	graph, err := layered.NewDependencyGraph(nodes)
+	require.NoError(t, err)
 
-	state, err := m.InitializeLayerState(projects, graph, changed)
-	Ok(t, err)
-	Assert(t, state != nil, "expected non-nil state")
-	Equals(t, 1, state.TotalLayers)
-	Equals(t, 0, state.ProjectLayers["A"])
+	projects := []models.ProjectStatus{
+		{ProjectName: "a"},
+	}
+
+	state := m.InitializeLayerState(projects, graph)
+	require.NotNil(t, state)
+	assert.Equal(t, 1, state.TotalLayers)
+	assert.Equal(t, 0, state.ProjectLayers["a"])
 
 	// B and C should be pending (not assigned a layer yet)
 	sort.Strings(state.PendingProjects)
-	Equals(t, []string{"B", "C"}, state.PendingProjects)
+	assert.Equal(t, []string{"b", "c"}, state.PendingProjects)
 }
 
 func TestLayerStateInit_Diamond(t *testing.T) {
 	t.Log("diamond: A -> B, A -> C, B -> D, C -> D, all changed")
 	m := NewLayerStateManager()
 
-	projects := []models.ProjectStatus{
-		{ProjectName: "A"},
-		{ProjectName: "B"},
-		{ProjectName: "C"},
-		{ProjectName: "D"},
+	nodes := []layered.ProjectNode{
+		{ID: "a", HasFileChanges: true},
+		{ID: "b", DependsOn: []layered.ProjectID{"a"}, HasFileChanges: true},
+		{ID: "c", DependsOn: []layered.ProjectID{"a"}, HasFileChanges: true},
+		{ID: "d", DependsOn: []layered.ProjectID{"b", "c"}, HasFileChanges: true},
 	}
-	graph := map[string][]string{
-		"A": {},
-		"B": {"A"},
-		"C": {"A"},
-		"D": {"B", "C"},
-	}
-	changed := map[string]bool{"A": true, "B": true, "C": true, "D": true}
+	graph, err := layered.NewDependencyGraph(nodes)
+	require.NoError(t, err)
 
-	state, err := m.InitializeLayerState(projects, graph, changed)
-	Ok(t, err)
-	Assert(t, state != nil, "expected non-nil state")
-	Equals(t, 3, state.TotalLayers)
-	Equals(t, 0, state.ProjectLayers["A"])
-	Equals(t, 1, state.ProjectLayers["B"])
-	Equals(t, 1, state.ProjectLayers["C"])
-	Equals(t, 2, state.ProjectLayers["D"])
+	projects := []models.ProjectStatus{
+		{ProjectName: "a"},
+		{ProjectName: "b"},
+		{ProjectName: "c"},
+		{ProjectName: "d"},
+	}
+
+	state := m.InitializeLayerState(projects, graph)
+	require.NotNil(t, state)
+	assert.Equal(t, 3, state.TotalLayers)
+	assert.Equal(t, 0, state.ProjectLayers["a"])
+	assert.Equal(t, 1, state.ProjectLayers["b"])
+	assert.Equal(t, 1, state.ProjectLayers["c"])
+	assert.Equal(t, 2, state.ProjectLayers["d"])
 }
 
 func TestLayerStateInit_ParallelChains(t *testing.T) {
 	t.Log("parallel independent chains: A -> B, C -> D")
 	m := NewLayerStateManager()
 
-	projects := []models.ProjectStatus{
-		{ProjectName: "A"},
-		{ProjectName: "B"},
-		{ProjectName: "C"},
-		{ProjectName: "D"},
+	nodes := []layered.ProjectNode{
+		{ID: "a", HasFileChanges: true},
+		{ID: "b", DependsOn: []layered.ProjectID{"a"}, HasFileChanges: true},
+		{ID: "c", HasFileChanges: true},
+		{ID: "d", DependsOn: []layered.ProjectID{"c"}, HasFileChanges: true},
 	}
-	graph := map[string][]string{
-		"A": {},
-		"B": {"A"},
-		"C": {},
-		"D": {"C"},
-	}
-	changed := map[string]bool{"A": true, "B": true, "C": true, "D": true}
+	graph, err := layered.NewDependencyGraph(nodes)
+	require.NoError(t, err)
 
-	state, err := m.InitializeLayerState(projects, graph, changed)
-	Ok(t, err)
-	Assert(t, state != nil, "expected non-nil state")
-	Equals(t, 2, state.TotalLayers)
-	Equals(t, 0, state.ProjectLayers["A"])
-	Equals(t, 1, state.ProjectLayers["B"])
-	Equals(t, 0, state.ProjectLayers["C"])
-	Equals(t, 1, state.ProjectLayers["D"])
+	projects := []models.ProjectStatus{
+		{ProjectName: "a"},
+		{ProjectName: "b"},
+		{ProjectName: "c"},
+		{ProjectName: "d"},
+	}
+
+	state := m.InitializeLayerState(projects, graph)
+	require.NotNil(t, state)
+	assert.Equal(t, 2, state.TotalLayers)
+	assert.Equal(t, 0, state.ProjectLayers["a"])
+	assert.Equal(t, 1, state.ProjectLayers["b"])
+	assert.Equal(t, 0, state.ProjectLayers["c"])
+	assert.Equal(t, 1, state.ProjectLayers["d"])
 }
 
 func TestLayerStateInit_CircularDependency(t *testing.T) {
-	t.Log("circular dependency should error")
-	m := NewLayerStateManager()
+	t.Log("circular dependency should error at graph construction")
 
-	projects := []models.ProjectStatus{
-		{ProjectName: "A"},
-		{ProjectName: "B"},
+	nodes := []layered.ProjectNode{
+		{ID: "a", DependsOn: []layered.ProjectID{"b"}, HasFileChanges: true},
+		{ID: "b", DependsOn: []layered.ProjectID{"a"}, HasFileChanges: true},
 	}
-	graph := map[string][]string{
-		"A": {"B"},
-		"B": {"A"},
-	}
-	changed := map[string]bool{"A": true, "B": true}
-
-	state, err := m.InitializeLayerState(projects, graph, changed)
-	Assert(t, err != nil, "expected error for circular dependency")
-	Assert(t, state == nil, "expected nil state on error")
-	ErrContains(t, "circular dependency", err)
+	_, err := layered.NewDependencyGraph(nodes)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "circular dependency")
 }
 
 func TestLayerStateInit_MixedChangedAndPending(t *testing.T) {
 	t.Log("A changed, B depends on A but not changed -> B is pending")
 	m := NewLayerStateManager()
 
-	projects := []models.ProjectStatus{
-		{ProjectName: "A"},
+	nodes := []layered.ProjectNode{
+		{ID: "a", HasFileChanges: true},
+		{ID: "b", DependsOn: []layered.ProjectID{"a"}, HasFileChanges: false},
 	}
-	graph := map[string][]string{
-		"A": {},
-		"B": {"A"},
-	}
-	changed := map[string]bool{"A": true}
+	graph, err := layered.NewDependencyGraph(nodes)
+	require.NoError(t, err)
 
-	state, err := m.InitializeLayerState(projects, graph, changed)
-	Ok(t, err)
-	Assert(t, state != nil, "expected non-nil state")
-	Equals(t, 0, state.ProjectLayers["A"])
-	Equals(t, []string{"B"}, state.PendingProjects)
+	projects := []models.ProjectStatus{
+		{ProjectName: "a"},
+	}
+
+	state := m.InitializeLayerState(projects, graph)
+	require.NotNil(t, state)
+	assert.Equal(t, 0, state.ProjectLayers["a"])
+	assert.Equal(t, []string{"b"}, state.PendingProjects)
 }
 
 // --- GetCurrentLayerProjects tests ---
@@ -187,7 +197,6 @@ func TestLayerStateInit_MixedChangedAndPending(t *testing.T) {
 func TestLayerStateGetCurrentLayerProjects(t *testing.T) {
 	m := NewLayerStateManager()
 	state := &models.LayerState{
-		Enabled:      true,
 		CurrentLayer: 0,
 		TotalLayers:  2,
 		ProjectLayers: map[string]int{
@@ -205,7 +214,6 @@ func TestLayerStateGetCurrentLayerProjects(t *testing.T) {
 func TestLayerStateGetCurrentLayerProjects_Layer1(t *testing.T) {
 	m := NewLayerStateManager()
 	state := &models.LayerState{
-		Enabled:      true,
 		CurrentLayer: 1,
 		TotalLayers:  2,
 		ProjectLayers: map[string]int{
@@ -245,7 +253,7 @@ func TestLayerStateIsLayerComplete_AllApplied(t *testing.T) {
 			{ProjectName: "A", Layer: 0, Status: models.AppliedStatus},
 			{ProjectName: "B", Layer: 0, Status: models.AppliedStatus},
 		},
-		LayerState: &models.LayerState{Enabled: true, CurrentLayer: 0},
+		LayerState: &models.LayerState{CurrentLayer: 0},
 	}
 
 	complete, blocking := m.IsLayerComplete(pullStatus, 0)
@@ -261,7 +269,7 @@ func TestLayerStateIsLayerComplete_AllNoChanges(t *testing.T) {
 			{ProjectName: "A", Layer: 0, Status: models.PlannedNoChangesPlanStatus},
 			{ProjectName: "B", Layer: 0, Status: models.PlannedNoChangesPlanStatus},
 		},
-		LayerState: &models.LayerState{Enabled: true, CurrentLayer: 0},
+		LayerState: &models.LayerState{CurrentLayer: 0},
 	}
 
 	complete, blocking := m.IsLayerComplete(pullStatus, 0)
@@ -278,7 +286,7 @@ func TestLayerStateIsLayerComplete_MixedTerminal(t *testing.T) {
 			{ProjectName: "B", Layer: 0, Status: models.PlannedNoChangesPlanStatus},
 			{ProjectName: "C", Layer: 0, Status: models.SkippedPlanStatus},
 		},
-		LayerState: &models.LayerState{Enabled: true, CurrentLayer: 0},
+		LayerState: &models.LayerState{CurrentLayer: 0},
 	}
 
 	complete, blocking := m.IsLayerComplete(pullStatus, 0)
@@ -294,7 +302,7 @@ func TestLayerStateIsLayerComplete_HasPlanned(t *testing.T) {
 			{ProjectName: "A", Layer: 0, Status: models.AppliedStatus},
 			{ProjectName: "B", Layer: 0, Status: models.PlannedPlanStatus},
 		},
-		LayerState: &models.LayerState{Enabled: true, CurrentLayer: 0},
+		LayerState: &models.LayerState{CurrentLayer: 0},
 	}
 
 	complete, blocking := m.IsLayerComplete(pullStatus, 0)
@@ -310,7 +318,7 @@ func TestLayerStateIsLayerComplete_HasErroredApply(t *testing.T) {
 			{ProjectName: "A", Layer: 0, Status: models.AppliedStatus},
 			{ProjectName: "B", Layer: 0, Status: models.ErroredApplyStatus},
 		},
-		LayerState: &models.LayerState{Enabled: true, CurrentLayer: 0},
+		LayerState: &models.LayerState{CurrentLayer: 0},
 	}
 
 	complete, blocking := m.IsLayerComplete(pullStatus, 0)
@@ -326,7 +334,7 @@ func TestLayerStateIsLayerComplete_HasErroredPlan(t *testing.T) {
 			{ProjectName: "A", Layer: 0, Status: models.ErroredPlanStatus},
 			{ProjectName: "B", Layer: 0, Status: models.PlannedPlanStatus},
 		},
-		LayerState: &models.LayerState{Enabled: true, CurrentLayer: 0},
+		LayerState: &models.LayerState{CurrentLayer: 0},
 	}
 
 	complete, blocking := m.IsLayerComplete(pullStatus, 0)
@@ -359,8 +367,7 @@ func TestLayerStateCanAdvance_LayerComplete(t *testing.T) {
 			{ProjectName: "A", Layer: 0, Status: models.AppliedStatus},
 		},
 		LayerState: &models.LayerState{
-			Enabled:      true,
-			CurrentLayer: 0,
+						CurrentLayer: 0,
 			TotalLayers:  2,
 			ProjectLayers: map[string]int{
 				"A": 0,
@@ -380,8 +387,7 @@ func TestLayerStateCanAdvance_LayerNotComplete(t *testing.T) {
 			{ProjectName: "A", Layer: 0, Status: models.PlannedPlanStatus},
 		},
 		LayerState: &models.LayerState{
-			Enabled:      true,
-			CurrentLayer: 0,
+						CurrentLayer: 0,
 			TotalLayers:  2,
 			ProjectLayers: map[string]int{
 				"A": 0,
@@ -400,8 +406,7 @@ func TestLayerStateCanAdvance_LastLayer(t *testing.T) {
 			{ProjectName: "A", Layer: 0, Status: models.AppliedStatus},
 		},
 		LayerState: &models.LayerState{
-			Enabled:      true,
-			CurrentLayer: 0,
+						CurrentLayer: 0,
 			TotalLayers:  1,
 			ProjectLayers: map[string]int{
 				"A": 0,
@@ -426,8 +431,7 @@ func TestLayerStateCanAdvance_HasPendingProjects(t *testing.T) {
 			{ProjectName: "A", Layer: 0, Status: models.AppliedStatus},
 		},
 		LayerState: &models.LayerState{
-			Enabled:         true,
-			CurrentLayer:    0,
+						CurrentLayer:    0,
 			TotalLayers:     1,
 			ProjectLayers:   map[string]int{"A": 0},
 			PendingProjects: []string{"B"},
@@ -442,20 +446,20 @@ func TestLayerStateCanAdvance_HasPendingProjects(t *testing.T) {
 func TestLayerStateAdvance_UpstreamHadChanges(t *testing.T) {
 	t.Log("upstream applied with changes -> pending dependent enters next layer")
 	m := NewLayerStateManager()
+	graph := mustBuildGraph(t, []layered.ProjectNode{
+		{ID: "A", HasFileChanges: true},
+		{ID: "B", DependsOn: []layered.ProjectID{"A"}, HasFileChanges: false},
+	})
 	pullStatus := &models.PullStatus{
 		Projects: []models.ProjectStatus{
 			{ProjectName: "A", Layer: 0, Status: models.AppliedStatus},
 		},
 		LayerState: &models.LayerState{
-			Enabled:      true,
-			CurrentLayer: 0,
-			TotalLayers:  1,
-			DependencyGraph: map[string][]string{
-				"A": {},
-				"B": {"A"},
-			},
-			ProjectLayers:   map[string]int{"A": 0},
-			PendingProjects: []string{"B"},
+			Graph:            graph,
+			CurrentLayer:     0,
+			TotalLayers:      1,
+			ProjectLayers:    map[string]int{"A": 0},
+			PendingProjects:  []string{"B"},
 			SkippedUpstreams: map[string]bool{},
 		},
 	}
@@ -472,20 +476,20 @@ func TestLayerStateAdvance_UpstreamHadChanges(t *testing.T) {
 func TestLayerStateAdvance_UpstreamNoChanges(t *testing.T) {
 	t.Log("upstream had no changes -> cascade stops, dependent excluded")
 	m := NewLayerStateManager()
+	graph := mustBuildGraph(t, []layered.ProjectNode{
+		{ID: "A", HasFileChanges: true},
+		{ID: "B", DependsOn: []layered.ProjectID{"A"}, HasFileChanges: false},
+	})
 	pullStatus := &models.PullStatus{
 		Projects: []models.ProjectStatus{
 			{ProjectName: "A", Layer: 0, Status: models.PlannedNoChangesPlanStatus},
 		},
 		LayerState: &models.LayerState{
-			Enabled:      true,
-			CurrentLayer: 0,
-			TotalLayers:  1,
-			DependencyGraph: map[string][]string{
-				"A": {},
-				"B": {"A"},
-			},
-			ProjectLayers:   map[string]int{"A": 0},
-			PendingProjects: []string{"B"},
+			Graph:            graph,
+			CurrentLayer:     0,
+			TotalLayers:      1,
+			ProjectLayers:    map[string]int{"A": 0},
+			PendingProjects:  []string{"B"},
 			SkippedUpstreams: map[string]bool{},
 		},
 	}
@@ -499,18 +503,18 @@ func TestLayerStateAdvance_UpstreamNoChanges(t *testing.T) {
 func TestLayerStateAdvance_UpstreamSkipped(t *testing.T) {
 	t.Log("upstream was skipped -> cascade stops, dependent excluded")
 	m := NewLayerStateManager()
+	graph := mustBuildGraph(t, []layered.ProjectNode{
+		{ID: "A", HasFileChanges: true},
+		{ID: "B", DependsOn: []layered.ProjectID{"A"}, HasFileChanges: false},
+	})
 	pullStatus := &models.PullStatus{
 		Projects: []models.ProjectStatus{
 			{ProjectName: "A", Layer: 0, Status: models.SkippedPlanStatus},
 		},
 		LayerState: &models.LayerState{
-			Enabled:      true,
-			CurrentLayer: 0,
-			TotalLayers:  1,
-			DependencyGraph: map[string][]string{
-				"A": {},
-				"B": {"A"},
-			},
+			Graph:            graph,
+			CurrentLayer:     0,
+			TotalLayers:      1,
 			ProjectLayers:    map[string]int{"A": 0},
 			PendingProjects:  []string{"B"},
 			SkippedUpstreams: map[string]bool{"A": true},
@@ -526,22 +530,22 @@ func TestLayerStateAdvance_UpstreamSkipped(t *testing.T) {
 func TestLayerStateAdvance_MultipleUpstreamsMixed(t *testing.T) {
 	t.Log("B depends on A and C; A=applied, C=no-changes -> B still included")
 	m := NewLayerStateManager()
+	graph := mustBuildGraph(t, []layered.ProjectNode{
+		{ID: "A", HasFileChanges: true},
+		{ID: "C", HasFileChanges: true},
+		{ID: "B", DependsOn: []layered.ProjectID{"A", "C"}, HasFileChanges: false},
+	})
 	pullStatus := &models.PullStatus{
 		Projects: []models.ProjectStatus{
 			{ProjectName: "A", Layer: 0, Status: models.AppliedStatus},
 			{ProjectName: "C", Layer: 0, Status: models.PlannedNoChangesPlanStatus},
 		},
 		LayerState: &models.LayerState{
-			Enabled:      true,
-			CurrentLayer: 0,
-			TotalLayers:  1,
-			DependencyGraph: map[string][]string{
-				"A": {},
-				"C": {},
-				"B": {"A", "C"},
-			},
-			ProjectLayers:   map[string]int{"A": 0, "C": 0},
-			PendingProjects: []string{"B"},
+			Graph:            graph,
+			CurrentLayer:     0,
+			TotalLayers:      1,
+			ProjectLayers:    map[string]int{"A": 0, "C": 0},
+			PendingProjects:  []string{"B"},
 			SkippedUpstreams: map[string]bool{},
 		},
 	}
@@ -555,15 +559,17 @@ func TestLayerStateAdvance_MultipleUpstreamsMixed(t *testing.T) {
 func TestLayerStateAdvance_NoPendingProjects(t *testing.T) {
 	t.Log("no pending projects -> all done")
 	m := NewLayerStateManager()
+	graph := mustBuildGraph(t, []layered.ProjectNode{
+		{ID: "A", HasFileChanges: true},
+	})
 	pullStatus := &models.PullStatus{
 		Projects: []models.ProjectStatus{
 			{ProjectName: "A", Layer: 0, Status: models.AppliedStatus},
 		},
 		LayerState: &models.LayerState{
-			Enabled:          true,
+			Graph:            graph,
 			CurrentLayer:     0,
 			TotalLayers:      1,
-			DependencyGraph:  map[string][]string{"A": {}},
 			ProjectLayers:    map[string]int{"A": 0},
 			PendingProjects:  nil,
 			SkippedUpstreams: map[string]bool{},
@@ -579,21 +585,21 @@ func TestLayerStateAdvance_NoPendingProjects(t *testing.T) {
 func TestLayerStateAdvance_MultiLayerCascade(t *testing.T) {
 	t.Log("A -> B -> C: advance from 0 adds B to 1, C stays pending")
 	m := NewLayerStateManager()
+	graph := mustBuildGraph(t, []layered.ProjectNode{
+		{ID: "A", HasFileChanges: true},
+		{ID: "B", DependsOn: []layered.ProjectID{"A"}, HasFileChanges: false},
+		{ID: "C", DependsOn: []layered.ProjectID{"B"}, HasFileChanges: false},
+	})
 	pullStatus := &models.PullStatus{
 		Projects: []models.ProjectStatus{
 			{ProjectName: "A", Layer: 0, Status: models.AppliedStatus},
 		},
 		LayerState: &models.LayerState{
-			Enabled:      true,
-			CurrentLayer: 0,
-			TotalLayers:  1,
-			DependencyGraph: map[string][]string{
-				"A": {},
-				"B": {"A"},
-				"C": {"B"},
-			},
-			ProjectLayers:   map[string]int{"A": 0},
-			PendingProjects: []string{"B", "C"},
+			Graph:            graph,
+			CurrentLayer:     0,
+			TotalLayers:      1,
+			ProjectLayers:    map[string]int{"A": 0},
+			PendingProjects:  []string{"B", "C"},
 			SkippedUpstreams: map[string]bool{},
 		},
 	}
@@ -621,8 +627,7 @@ func TestLayerStateSkip_Disabled(t *testing.T) {
 	m := NewLayerStateManager()
 	pullStatus := &models.PullStatus{
 		LayerState: &models.LayerState{
-			Enabled:      true,
-			CurrentLayer: 0,
+						CurrentLayer: 0,
 			ProjectLayers: map[string]int{"A": 0},
 		},
 		Projects: []models.ProjectStatus{
@@ -640,8 +645,7 @@ func TestLayerStateSkip_NotInCurrentLayer(t *testing.T) {
 	m := NewLayerStateManager()
 	pullStatus := &models.PullStatus{
 		LayerState: &models.LayerState{
-			Enabled:      true,
-			CurrentLayer: 0,
+						CurrentLayer: 0,
 			ProjectLayers: map[string]int{"A": 1},
 		},
 		Projects: []models.ProjectStatus{
@@ -659,8 +663,7 @@ func TestLayerStateSkip_NotErrored(t *testing.T) {
 	m := NewLayerStateManager()
 	pullStatus := &models.PullStatus{
 		LayerState: &models.LayerState{
-			Enabled:      true,
-			CurrentLayer: 0,
+						CurrentLayer: 0,
 			ProjectLayers: map[string]int{"A": 0},
 		},
 		Projects: []models.ProjectStatus{
@@ -676,14 +679,14 @@ func TestLayerStateSkip_NotErrored(t *testing.T) {
 func TestLayerStateSkip_Valid(t *testing.T) {
 	t.Log("valid skip -> status updated, marked in skipped upstreams")
 	m := NewLayerStateManager()
+	graph := mustBuildGraph(t, []layered.ProjectNode{
+		{ID: "A", HasFileChanges: true},
+		{ID: "B", DependsOn: []layered.ProjectID{"A"}, HasFileChanges: false},
+	})
 	pullStatus := &models.PullStatus{
 		LayerState: &models.LayerState{
-			Enabled:      true,
-			CurrentLayer: 0,
-			DependencyGraph: map[string][]string{
-				"A": {},
-				"B": {"A"},
-			},
+			Graph:            graph,
+			CurrentLayer:     0,
 			ProjectLayers:    map[string]int{"A": 0},
 			PendingProjects:  []string{"B"},
 			SkippedUpstreams: map[string]bool{},
@@ -702,15 +705,15 @@ func TestLayerStateSkip_Valid(t *testing.T) {
 func TestLayerStateSkip_TransitiveDependents(t *testing.T) {
 	t.Log("skip A -> B (depends on A) excluded -> C (depends on B) excluded")
 	m := NewLayerStateManager()
+	graph := mustBuildGraph(t, []layered.ProjectNode{
+		{ID: "A", HasFileChanges: true},
+		{ID: "B", DependsOn: []layered.ProjectID{"A"}, HasFileChanges: false},
+		{ID: "C", DependsOn: []layered.ProjectID{"B"}, HasFileChanges: false},
+	})
 	pullStatus := &models.PullStatus{
 		LayerState: &models.LayerState{
-			Enabled:      true,
-			CurrentLayer: 0,
-			DependencyGraph: map[string][]string{
-				"A": {},
-				"B": {"A"},
-				"C": {"B"},
-			},
+			Graph:            graph,
+			CurrentLayer:     0,
 			ProjectLayers:    map[string]int{"A": 0},
 			PendingProjects:  []string{"B", "C"},
 			SkippedUpstreams: map[string]bool{},
@@ -733,13 +736,13 @@ func TestLayerStateSkip_TransitiveDependents(t *testing.T) {
 func TestLayerStateSkip_PreservesWorkspaceAndDir(t *testing.T) {
 	t.Log("skip should preserve workspace and repoRelDir for persistence")
 	m := NewLayerStateManager()
+	graph := mustBuildGraph(t, []layered.ProjectNode{
+		{ID: "vpc", HasFileChanges: true},
+	})
 	pullStatus := &models.PullStatus{
 		LayerState: &models.LayerState{
-			Enabled:      true,
-			CurrentLayer: 0,
-			DependencyGraph: map[string][]string{
-				"vpc": {},
-			},
+			Graph:            graph,
+			CurrentLayer:     0,
 			ProjectLayers:    map[string]int{"vpc": 0},
 			SkippedUpstreams: map[string]bool{},
 		},
@@ -776,8 +779,7 @@ func TestLayerStateSkip_ProjectNotFound(t *testing.T) {
 	m := NewLayerStateManager()
 	pullStatus := &models.PullStatus{
 		LayerState: &models.LayerState{
-			Enabled:       true,
-			CurrentLayer:  0,
+						CurrentLayer:  0,
 			ProjectLayers: map[string]int{"A": 0},
 		},
 		Projects: []models.ProjectStatus{},
@@ -799,8 +801,7 @@ func TestLayerStateHandleNewCommit_FutureLayer(t *testing.T) {
 			{ProjectName: "B", Layer: 1, Status: models.PlannedPlanStatus},
 		},
 		LayerState: &models.LayerState{
-			Enabled:      true,
-			CurrentLayer: 0,
+						CurrentLayer: 0,
 			ProjectLayers: map[string]int{
 				"A": 0,
 				"B": 1,
@@ -820,8 +821,7 @@ func TestLayerStateHandleNewCommit_CurrentLayerNotApplied(t *testing.T) {
 			{ProjectName: "A", Layer: 0, Status: models.PlannedPlanStatus},
 		},
 		LayerState: &models.LayerState{
-			Enabled:       true,
-			CurrentLayer:  0,
+						CurrentLayer:  0,
 			ProjectLayers: map[string]int{"A": 0},
 		},
 	}
@@ -840,8 +840,7 @@ func TestLayerStateHandleNewCommit_CurrentLayerAlreadyApplied(t *testing.T) {
 			{ProjectName: "A", Layer: 0, Status: models.AppliedStatus},
 		},
 		LayerState: &models.LayerState{
-			Enabled:       true,
-			CurrentLayer:  0,
+						CurrentLayer:  0,
 			TotalLayers:   2,
 			ProjectLayers: map[string]int{"A": 0},
 		},
@@ -861,8 +860,7 @@ func TestLayerStateHandleNewCommit_CompletedLayer(t *testing.T) {
 			{ProjectName: "B", Layer: 1, Status: models.PlannedPlanStatus},
 		},
 		LayerState: &models.LayerState{
-			Enabled:      true,
-			CurrentLayer: 1,
+						CurrentLayer: 1,
 			ProjectLayers: map[string]int{
 				"A": 0,
 				"B": 1,
@@ -885,8 +883,7 @@ func TestLayerStateHandleNewCommit_MultipleLayers(t *testing.T) {
 			{ProjectName: "C", Layer: 2, Status: models.PlannedPlanStatus},
 		},
 		LayerState: &models.LayerState{
-			Enabled:      true,
-			CurrentLayer: 2,
+						CurrentLayer: 2,
 			ProjectLayers: map[string]int{
 				"A": 0,
 				"B": 1,
@@ -907,8 +904,7 @@ func TestLayerStateHandleNewCommit_NoAffected(t *testing.T) {
 			{ProjectName: "A", Layer: 0, Status: models.AppliedStatus},
 		},
 		LayerState: &models.LayerState{
-			Enabled:       true,
-			CurrentLayer:  0,
+						CurrentLayer:  0,
 			ProjectLayers: map[string]int{"A": 0},
 		},
 	}
@@ -931,7 +927,6 @@ func TestResetLayerState_ClearsCorrectLayers(t *testing.T) {
 	t.Log("reset to layer 1 should clear layers 1, 2, 3 and preserve layer 0")
 	m := NewLayerStateManager()
 	state := &models.LayerState{
-		Enabled:      true,
 		CurrentLayer: 3,
 		TotalLayers:  4,
 		ProjectLayers: map[string]int{
@@ -942,11 +937,6 @@ func TestResetLayerState_ClearsCorrectLayers(t *testing.T) {
 		},
 		PendingProjects:  []string{},
 		SkippedUpstreams: map[string]bool{"B": true},
-		DependencyGraph: map[string][]string{
-			"B": {"A"},
-			"C": {"B"},
-			"D": {"C"},
-		},
 	}
 
 	err := m.ResetLayerState(state, 1)
@@ -979,7 +969,6 @@ func TestResetLayerState_ResetToLayerZero(t *testing.T) {
 	t.Log("reset to layer 0 should clear all layers")
 	m := NewLayerStateManager()
 	state := &models.LayerState{
-		Enabled:      true,
 		CurrentLayer: 2,
 		TotalLayers:  3,
 		ProjectLayers: map[string]int{
@@ -1009,7 +998,6 @@ func TestResetLayerState_NilState(t *testing.T) {
 func TestResetLayerState_InvalidLayer(t *testing.T) {
 	m := NewLayerStateManager()
 	state := &models.LayerState{
-		Enabled:      true,
 		CurrentLayer: 1,
 		TotalLayers:  2,
 	}
@@ -1023,8 +1011,7 @@ func TestLayerStateIsAllComplete_CurrentLayerNegative(t *testing.T) {
 	m := NewLayerStateManager()
 	pullStatus := &models.PullStatus{
 		LayerState: &models.LayerState{
-			Enabled:      true,
-			CurrentLayer: -1,
+						CurrentLayer: -1,
 		},
 	}
 	Equals(t, true, m.IsAllComplete(pullStatus))
@@ -1034,8 +1021,7 @@ func TestLayerStateIsAllComplete_StillActive(t *testing.T) {
 	m := NewLayerStateManager()
 	pullStatus := &models.PullStatus{
 		LayerState: &models.LayerState{
-			Enabled:      true,
-			CurrentLayer: 0,
+						CurrentLayer: 0,
 			TotalLayers:  2,
 		},
 	}
@@ -1059,8 +1045,7 @@ func TestLayerStateGetLayerSummary(t *testing.T) {
 			{ProjectName: "C", Layer: 1, Status: models.PlannedPlanStatus},
 		},
 		LayerState: &models.LayerState{
-			Enabled:      true,
-			CurrentLayer: 1,
+						CurrentLayer: 1,
 			TotalLayers:  2,
 			ProjectLayers: map[string]int{
 				"A": 0,
@@ -1095,8 +1080,7 @@ func TestLayerStateGetLayerSummary_CurrentLayerNoResults(t *testing.T) {
 			{ProjectName: "A", Layer: 0, Status: models.AppliedStatus},
 		},
 		LayerState: &models.LayerState{
-			Enabled:      true,
-			CurrentLayer: 1,
+						CurrentLayer: 1,
 			TotalLayers:  2,
 			ProjectLayers: map[string]int{
 				"A": 0,
@@ -1180,20 +1164,18 @@ func TestLayerStateFullLifecycle(t *testing.T) {
 	m := NewLayerStateManager()
 
 	// Initialize with A -> B chain, both changed
+	graph := mustBuildGraph(t, []layered.ProjectNode{
+		{ID: "A", HasFileChanges: true},
+		{ID: "B", DependsOn: []layered.ProjectID{"A"}, HasFileChanges: true},
+	})
 	projects := []models.ProjectStatus{
 		{ProjectName: "A"},
 		{ProjectName: "B"},
 	}
-	graph := map[string][]string{
-		"A": {},
-		"B": {"A"},
-	}
-	changed := map[string]bool{"A": true, "B": true}
 
-	state, err := m.InitializeLayerState(projects, graph, changed)
-	Ok(t, err)
-	Assert(t, state != nil, "expected state")
-	Equals(t, 0, state.CurrentLayer)
+	state := m.InitializeLayerState(projects, graph)
+	require.NotNil(t, state)
+	assert.Equal(t, 0, state.CurrentLayer)
 
 	// Build PullStatus
 	pullStatus := &models.PullStatus{
@@ -1242,17 +1224,16 @@ func TestLayerStateLifecycle_NoChangesCascadeStop(t *testing.T) {
 	t.Log("L0 plans with no changes -> L1 never created")
 	m := NewLayerStateManager()
 
+	graph := mustBuildGraph(t, []layered.ProjectNode{
+		{ID: "A", HasFileChanges: true},
+		{ID: "B", DependsOn: []layered.ProjectID{"A"}, HasFileChanges: false},
+	})
 	projects := []models.ProjectStatus{
 		{ProjectName: "A"},
 	}
-	graph := map[string][]string{
-		"A": {},
-		"B": {"A"},
-	}
-	changed := map[string]bool{"A": true}
 
-	state, err := m.InitializeLayerState(projects, graph, changed)
-	Ok(t, err)
+	state := m.InitializeLayerState(projects, graph)
+	require.NotNil(t, state)
 
 	pullStatus := &models.PullStatus{
 		Projects: []models.ProjectStatus{
@@ -1277,17 +1258,16 @@ func TestLayerStateLifecycle_SkipAndCascadeStop(t *testing.T) {
 	t.Log("L0 apply fails -> skip -> advance -> dependents excluded")
 	m := NewLayerStateManager()
 
+	graph := mustBuildGraph(t, []layered.ProjectNode{
+		{ID: "A", HasFileChanges: true},
+		{ID: "B", DependsOn: []layered.ProjectID{"A"}, HasFileChanges: false},
+	})
 	projects := []models.ProjectStatus{
 		{ProjectName: "A"},
 	}
-	graph := map[string][]string{
-		"A": {},
-		"B": {"A"},
-	}
-	changed := map[string]bool{"A": true}
 
-	state, err := m.InitializeLayerState(projects, graph, changed)
-	Ok(t, err)
+	state := m.InitializeLayerState(projects, graph)
+	require.NotNil(t, state)
 
 	pullStatus := &models.PullStatus{
 		Projects: []models.ProjectStatus{
@@ -1297,6 +1277,7 @@ func TestLayerStateLifecycle_SkipAndCascadeStop(t *testing.T) {
 	}
 
 	// Skip A
+	var err error
 	pullStatus, err = m.SkipProject(pullStatus, "A", true)
 	Ok(t, err)
 	Equals(t, models.SkippedPlanStatus, pullStatus.Projects[0].Status)
@@ -1316,8 +1297,7 @@ func TestGetLayerSummary_DeterministicOrdering(t *testing.T) {
 	m := NewLayerStateManager()
 	pullStatus := &models.PullStatus{
 		LayerState: &models.LayerState{
-			Enabled:      true,
-			CurrentLayer: 0,
+						CurrentLayer: 0,
 			TotalLayers:  1,
 			ProjectLayers: map[string]int{
 				"zebra":  0,

@@ -28,6 +28,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/runatlantis/atlantis/server/events/layered"
 	"github.com/runatlantis/atlantis/server/logging"
 )
 
@@ -560,9 +561,11 @@ type PullStatus struct {
 // LayerState tracks the layered planning state for a pull request.
 // It is only populated when layered planning is active (i.e., at least
 // one in-scope project has depends_on configured).
+// LayerState tracks the layered planning state for a pull request.
 type LayerState struct {
-	// Enabled is true when layered planning is active for this PR.
-	Enabled bool `json:"enabled"`
+	// Graph is the dependency graph for all projects participating in
+	// layered planning. Nil when layered planning is not active.
+	Graph *layered.DependencyGraph `json:"graph,omitempty"`
 
 	// CurrentLayer is the layer index currently being planned/applied.
 	// Starts at 0. A value of -1 means all layers are complete.
@@ -572,22 +575,21 @@ type LayerState struct {
 	// cascade evaluation discovers new in-scope projects in later layers.
 	TotalLayers int `json:"total_layers"`
 
-	// DependencyGraph maps project name -> list of project names it depends on.
-	// This is the full graph for all in-scope projects, used for cascade evaluation.
-	DependencyGraph map[string][]string `json:"dependency_graph"`
-
 	// ProjectLayers maps project name -> layer index for all in-scope projects.
-	// Projects not yet assigned a layer (pending cascade evaluation) are absent.
 	ProjectLayers map[string]int `json:"project_layers"`
 
 	// PendingProjects lists project names that are known dependents but have not
-	// yet been assigned to a layer (waiting for upstream plan results to determine
-	// if they need to cascade).
+	// yet been assigned to a layer (awaiting cascade evaluation).
 	PendingProjects []string `json:"pending_projects,omitempty"`
 
-	// SkippedUpstreams maps project name -> true for projects that were skipped.
-	// Their downstream dependents will be excluded from future layers.
+	// SkippedUpstreams tracks projects whose upstream dependency was skipped,
+	// meaning they should be excluded from subsequent layers.
 	SkippedUpstreams map[string]bool `json:"skipped_upstreams,omitempty"`
+}
+
+// Enabled returns true when layered planning is active.
+func (s *LayerState) Enabled() bool {
+	return s != nil && s.Graph != nil
 }
 
 // StatusCount returns the number of projects that have status.

@@ -4,6 +4,7 @@
 package layered
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -40,7 +41,11 @@ type ProjectNode struct {
 	ChangeStatus ChangeStatus
 }
 
-// DependencyGraph represents the full DAG of project dependencies.
+// DependencyGraph is the single source of truth for all graph operations:
+//   - Construction and validation via NewDependencyGraph()
+//   - Initial layer calculation via CalculateInitialLayers()
+//   - Dynamic layer expansion via ExpandLayer()
+//   - Dependency/dependent lookups via GetDependencies()/GetDependents()
 type DependencyGraph struct {
 	// nodes maps project ID to its node.
 	nodes map[ProjectID]*ProjectNode
@@ -50,6 +55,36 @@ type DependencyGraph struct {
 	// dependencies maps a project ID to the set of projects it depends on
 	// (forward edges). This is the "who do I depend on?" lookup.
 	dependencies map[ProjectID]map[ProjectID]bool
+}
+
+// graphJSON is the JSON-serializable representation of DependencyGraph.
+type graphJSON struct {
+	Nodes []ProjectNode `json:"nodes"`
+}
+
+// MarshalJSON implements json.Marshaler for DependencyGraph.
+func (g *DependencyGraph) MarshalJSON() ([]byte, error) {
+	// Convert from pointers to values for JSON serialization
+	nodes := make([]ProjectNode, len(g.nodes))
+	allNodes := g.AllNodes()
+	for i, n := range allNodes {
+		nodes[i] = *n
+	}
+	return json.Marshal(graphJSON{Nodes: nodes})
+}
+
+// UnmarshalJSON implements json.Unmarshaler for DependencyGraph.
+func (g *DependencyGraph) UnmarshalJSON(data []byte) error {
+	var gj graphJSON
+	if err := json.Unmarshal(data, &gj); err != nil {
+		return err
+	}
+	rebuilt, err := NewDependencyGraph(gj.Nodes)
+	if err != nil {
+		return err
+	}
+	*g = *rebuilt
+	return nil
 }
 
 // Layer represents a single execution layer.
@@ -280,7 +315,7 @@ func (g *DependencyGraph) ExpandLayer(
 		}
 	}
 
-	// Step 3: If no new projects, return current plan unchanged.
+	// Step 4: If no new projects, return current plan unchanged.
 	if len(newlyInScope) == 0 {
 		return currentPlan
 	}
@@ -549,50 +584,4 @@ func findLayerOf(id ProjectID, plan *LayerPlan) int {
 		}
 	}
 	return -1
-}
-
-// ValidProject is a minimal interface for converting valid.Project to
-// ProjectNode without importing the valid package (avoiding circular deps).
-type ValidProject struct {
-	Name      *string
-	DependsOn []string
-}
-
-// ProjectsToNodes converts project configs and a set of changed project
-// names into ProjectNode entries suitable for graph construction. It
-// includes ALL projects that participate in any dependency relationship
-// (either as a dependent or a dependency), not just the ones with file
-// changes.
-func ProjectsToNodes(
-	allProjects []ValidProject,
-	changedProjectNames map[string]bool,
-) []ProjectNode {
-	// First pass: find all projects that participate in any dependency
-	// relationship (either as a dependent or a dependency).
-	participants := make(map[string]bool)
-	for _, p := range allProjects {
-		if p.Name == nil {
-			continue
-		}
-		if len(p.DependsOn) > 0 {
-			participants[*p.Name] = true
-			for _, dep := range p.DependsOn {
-				participants[dep] = true
-			}
-		}
-	}
-
-	// Second pass: build nodes for all participants.
-	var nodes []ProjectNode
-	for _, p := range allProjects {
-		if p.Name == nil || !participants[*p.Name] {
-			continue
-		}
-		nodes = append(nodes, ProjectNode{
-			ID:             *p.Name,
-			DependsOn:      p.DependsOn,
-			HasFileChanges: changedProjectNames[*p.Name],
-		})
-	}
-	return nodes
 }

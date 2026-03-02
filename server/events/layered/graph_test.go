@@ -4,11 +4,14 @@
 package layered_test
 
 import (
+	"encoding/json"
 	"fmt"
 	"testing"
 
 	"github.com/runatlantis/atlantis/server/events/layered"
 	. "github.com/runatlantis/atlantis/testing"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // --- Graph Construction Tests ---
@@ -630,55 +633,38 @@ func TestUndefinedDependencyError_Format(t *testing.T) {
 	Equals(t, `project "foo" depends on "bar", but no project named "bar" exists`, err.Error())
 }
 
-// --- ProjectsToNodes ---
+// --- JSON Marshaling Tests ---
 
-func TestProjectsToNodes_Basic(t *testing.T) {
-	nameA := "a"
-	nameB := "b"
-	nameC := "c"
-	projects := []layered.ValidProject{
-		{Name: &nameA, DependsOn: nil},
-		{Name: &nameB, DependsOn: []string{"a"}},
-		{Name: &nameC, DependsOn: nil}, // C has no dep relationships
+func TestDependencyGraph_JSONRoundTrip(t *testing.T) {
+	nodes := []layered.ProjectNode{
+		{ID: "a", DependsOn: nil, HasFileChanges: true},
+		{ID: "b", DependsOn: []layered.ProjectID{"a"}, HasFileChanges: true},
+		{ID: "c", DependsOn: []layered.ProjectID{"b"}, HasFileChanges: false},
 	}
-	changed := map[string]bool{"a": true, "b": true}
+	original, err := layered.NewDependencyGraph(nodes)
+	require.NoError(t, err)
 
-	nodes := layered.ProjectsToNodes(projects, changed)
-	// Only A and B should be included (they participate in deps).
-	// C doesn't participate (not depended on and has no deps).
-	Equals(t, 2, len(nodes))
-	Equals(t, "a", nodes[0].ID)
-	Assert(t, nodes[0].HasFileChanges, "a should have file changes")
-	Equals(t, "b", nodes[1].ID)
-	Assert(t, nodes[1].HasFileChanges, "b should have file changes")
-}
+	// Marshal
+	data, err := json.Marshal(original)
+	require.NoError(t, err)
 
-func TestProjectsToNodes_UnnamedSkipped(t *testing.T) {
-	nameA := "a"
-	projects := []layered.ValidProject{
-		{Name: &nameA, DependsOn: nil},
-		{Name: nil, DependsOn: nil}, // unnamed, no deps
-	}
-	changed := map[string]bool{"a": true}
+	// Unmarshal
+	var restored layered.DependencyGraph
+	err = json.Unmarshal(data, &restored)
+	require.NoError(t, err)
 
-	nodes := layered.ProjectsToNodes(projects, changed)
-	Equals(t, 0, len(nodes)) // A has no dep relationships, unnamed skipped
-}
+	// Verify structure preserved
+	assert.True(t, restored.HasDependencies())
+	assert.Equal(t, []layered.ProjectID{"a"}, restored.GetDependencies("b"))
+	assert.Equal(t, []layered.ProjectID{"b"}, restored.GetDependents("a"))
+	assert.Equal(t, []layered.ProjectID{"b"}, restored.GetDependencies("c"))
 
-func TestProjectsToNodes_IncludesDependedUpon(t *testing.T) {
-	// A has no depends_on but B depends on A, so A should be included
-	nameA := "a"
-	nameB := "b"
-	projects := []layered.ValidProject{
-		{Name: &nameA, DependsOn: nil},
-		{Name: &nameB, DependsOn: []string{"a"}},
-	}
-	changed := map[string]bool{"b": true}
+	// Verify node properties preserved
+	nodeA := restored.GetNode("a")
+	require.NotNil(t, nodeA)
+	assert.True(t, nodeA.HasFileChanges)
 
-	nodes := layered.ProjectsToNodes(projects, changed)
-	Equals(t, 2, len(nodes))
-	Equals(t, "a", nodes[0].ID)
-	Assert(t, !nodes[0].HasFileChanges, "a should not have file changes")
-	Equals(t, "b", nodes[1].ID)
-	Assert(t, nodes[1].HasFileChanges, "b should have file changes")
+	nodeC := restored.GetNode("c")
+	require.NotNil(t, nodeC)
+	assert.False(t, nodeC.HasFileChanges)
 }

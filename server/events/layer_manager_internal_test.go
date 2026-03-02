@@ -7,14 +7,26 @@ import (
 	"testing"
 
 	"github.com/runatlantis/atlantis/server/events/command"
+	"github.com/runatlantis/atlantis/server/events/layered"
 	"github.com/runatlantis/atlantis/server/events/models"
 	"github.com/runatlantis/atlantis/server/logging"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestBuildDashboardData_PendingCountIncludesFutureLayers(t *testing.T) {
 	lm := NewLayerManager(NewLayerStateManager(), nil)
 	logger := logging.NewNoopLogger(t)
+
+	// Build a graph to enable layer state
+	graph, err := layered.NewDependencyGraph([]layered.ProjectNode{
+		{ID: "base", DependsOn: nil, HasFileChanges: true},
+		{ID: "child-a", DependsOn: []layered.ProjectID{"base"}, HasFileChanges: true},
+		{ID: "child-b", DependsOn: []layered.ProjectID{"base"}, HasFileChanges: true},
+		{ID: "grandchild", DependsOn: []layered.ProjectID{"child-a"}, HasFileChanges: true},
+		{ID: "leaf", DependsOn: []layered.ProjectID{"grandchild"}, HasFileChanges: true},
+	})
+	require.NoError(t, err)
 
 	// Simulate a 4-layer cascade where only layer 0 is current.
 	// Layer 0: "base" (current, shown on dashboard)
@@ -22,7 +34,7 @@ func TestBuildDashboardData_PendingCountIncludesFutureLayers(t *testing.T) {
 	// Layer 2: "grandchild" (future, not shown)
 	// Layer 3: "leaf" (future, not shown)
 	state := &models.LayerState{
-		Enabled:      true,
+		Graph:        graph,
 		CurrentLayer: 0,
 		TotalLayers:  4,
 		ProjectLayers: map[string]int{
@@ -61,10 +73,18 @@ func TestBuildDashboardData_PendingCountIncludesPendingProjects(t *testing.T) {
 	lm := NewLayerManager(NewLayerStateManager(), nil)
 	logger := logging.NewNoopLogger(t)
 
+	// Build a graph to enable layer state
+	graph, err := layered.NewDependencyGraph([]layered.ProjectNode{
+		{ID: "base", DependsOn: nil, HasFileChanges: true},
+		{ID: "child", DependsOn: []layered.ProjectID{"base"}, HasFileChanges: true},
+		{ID: "transitive-dep", DependsOn: []layered.ProjectID{"child"}, HasFileChanges: false},
+	})
+	require.NoError(t, err)
+
 	// Simulate a scenario with both future-layer projects AND pending projects
 	// (transitive dependents without file changes).
 	state := &models.LayerState{
-		Enabled:      true,
+		Graph:        graph,
 		CurrentLayer: 0,
 		TotalLayers:  2,
 		ProjectLayers: map[string]int{
@@ -100,9 +120,16 @@ func TestBuildDashboardData_NoPendingWhenAllShown(t *testing.T) {
 	lm := NewLayerManager(NewLayerStateManager(), nil)
 	logger := logging.NewNoopLogger(t)
 
+	// Build a graph to enable layer state (independent projects, no dependencies)
+	graph, err := layered.NewDependencyGraph([]layered.ProjectNode{
+		{ID: "a", DependsOn: nil, HasFileChanges: true},
+		{ID: "b", DependsOn: nil, HasFileChanges: true},
+	})
+	require.NoError(t, err)
+
 	// All projects are in the current layer — nothing pending.
 	state := &models.LayerState{
-		Enabled:      true,
+		Graph:        graph,
 		CurrentLayer: 0,
 		TotalLayers:  1,
 		ProjectLayers: map[string]int{

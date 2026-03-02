@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sort"
 
+	"github.com/runatlantis/atlantis/server/events/layered"
 	"github.com/runatlantis/atlantis/server/events/models"
 )
 
@@ -14,14 +15,12 @@ import (
 // It is the single source of truth for layer progression, cascade
 // evaluation, and skip handling.
 type LayerStateManager interface {
-	// InitializeLayerState builds the initial LayerState from the dependency
-	// graph and the set of in-scope projects (those with git file changes).
-	// Returns nil if layered planning is not needed (no depends_on relationships).
+	// InitializeLayerState builds the initial LayerState from a validated
+	// dependency graph. Returns nil if no dependencies exist.
 	InitializeLayerState(
 		projects []models.ProjectStatus,
-		dependencyGraph map[string][]string,
-		changedProjects map[string]bool,
-	) (*models.LayerState, error)
+		graph *layered.DependencyGraph,
+	) *models.LayerState
 
 	// GetCurrentLayerProjects returns the project names in the current layer.
 	GetCurrentLayerProjects(state *models.LayerState) []string
@@ -111,90 +110,41 @@ func NewLayerStateManager() *DefaultLayerStateManager {
 
 func (m *DefaultLayerStateManager) InitializeLayerState(
 	projects []models.ProjectStatus,
-	dependencyGraph map[string][]string,
-	changedProjects map[string]bool,
-) (*models.LayerState, error) {
-	// If no dependencies exist, return nil (no layered planning needed)
-	hasDeps := false
-	for _, deps := range dependencyGraph {
-		if len(deps) > 0 {
-			hasDeps = true
-			break
-		}
-	}
-	if !hasDeps {
-		return nil, nil
+	graph *layered.DependencyGraph,
+) *models.LayerState {
+	if graph == nil || !graph.HasDependencies() {
+		return nil
 	}
 
-	// Check for circular dependencies
-	if err := detectCycles(dependencyGraph); err != nil {
-		return nil, err
-	}
+	// Calculate initial layers using the typed graph
+	plan := graph.CalculateInitialLayers()
 
-	// Topologically sort changed projects into layers
+	// Build project layers map
 	projectLayers := make(map[string]int)
 	maxLayer := 0
-
-	// Compute layers using depth in the dependency graph
-	computed := make(map[string]int)
-	var computeLayer func(project string) int
-	computeLayer = func(project string) int {
-		if layer, ok := computed[project]; ok {
-			return layer
-		}
-		layer := 0
-		for _, dep := range dependencyGraph[project] {
-			if changedProjects[dep] {
-				depLayer := computeLayer(dep) + 1
-				if depLayer > layer {
-					layer = depLayer
-				}
+	for _, layer := range plan.Layers {
+		for _, projectID := range layer.Projects {
+			projectLayers[string(projectID)] = layer.Index
+			if layer.Index > maxLayer {
+				maxLayer = layer.Index
 			}
-		}
-		computed[project] = layer
-		return layer
-	}
-
-	for project := range changedProjects {
-		layer := computeLayer(project)
-		projectLayers[project] = layer
-		if layer > maxLayer {
-			maxLayer = layer
 		}
 	}
 
-	// Identify pending projects: all transitive dependents of changed projects
-	// that don't have git changes themselves
-	var pending []string
-	reverseDeps := buildReverseDependencyMap(dependencyGraph)
-	visited := make(map[string]bool)
-	var walkDependents func(project string)
-	walkDependents = func(project string) {
-		for _, dependent := range reverseDeps[project] {
-			if visited[dependent] {
-				continue
-			}
-			visited[dependent] = true
-			if !changedProjects[dependent] {
-				pending = append(pending, dependent)
-			}
-			walkDependents(dependent)
-		}
+	// Out-of-scope projects become pending
+	pending := make([]string, len(plan.OutOfScope))
+	for i, id := range plan.OutOfScope {
+		pending[i] = string(id)
 	}
-	for project := range changedProjects {
-		walkDependents(project)
-	}
-	pending = deduplicate(pending)
 
 	return &models.LayerState{
-		Enabled:          true,
+		Graph:            graph,
 		CurrentLayer:     0,
 		TotalLayers:      maxLayer + 1,
-		DependencyGraph:  dependencyGraph,
 		ProjectLayers:    projectLayers,
 		PendingProjects:  pending,
 		SkippedUpstreams: make(map[string]bool),
-	}, nil
+	}
 }
 
 func (m *DefaultLayerStateManager) GetCurrentLayerProjects(state *models.LayerState) []string {
@@ -274,72 +224,69 @@ func (m *DefaultLayerStateManager) AdvanceLayer(
 		return nil, nil, fmt.Errorf("no layer state to advance")
 	}
 
+	graph := state.Graph
 	completedLayer := state.CurrentLayer
 
-	// Determine which completed-layer projects had actual changes
-	projectsWithChanges := make(map[string]bool)
+	// Build current plan from state
+	currentPlan := m.buildLayerPlanFromState(state)
+
+	// Determine project statuses from pull status
+	projectStatuses := make(map[layered.ProjectID]layered.ChangeStatus)
 	for _, proj := range pullStatus.Projects {
-		if proj.Layer == completedLayer && proj.Status == models.AppliedStatus {
-			projectsWithChanges[projectStatusKey(proj)] = true
+		key := projectStatusKey(proj)
+		if proj.Layer == completedLayer {
+			switch proj.Status {
+			case models.AppliedStatus:
+				projectStatuses[layered.ProjectID(key)] = layered.ChangeStatusHasChanges
+			case models.PlannedNoChangesPlanStatus:
+				projectStatuses[layered.ProjectID(key)] = layered.ChangeStatusNoChanges
+			case models.ErroredApplyStatus, models.ErroredPlanStatus:
+				projectStatuses[layered.ProjectID(key)] = layered.ChangeStatusError
+			}
 		}
 	}
 
-	// Collect projects already assigned to the next layer (from initialization)
+	// Use typed graph to expand layers
+	newPlan := graph.ExpandLayer(currentPlan, completedLayer, projectStatuses)
+
+	// Extract next layer projects
 	nextLayer := completedLayer + 1
 	var nextLayerProjects []string
-	for name, layer := range state.ProjectLayers {
-		if layer == nextLayer {
-			nextLayerProjects = append(nextLayerProjects, name)
+	if nextLayer < len(newPlan.Layers) {
+		for _, id := range newPlan.Layers[nextLayer].Projects {
+			nextLayerProjects = append(nextLayerProjects, string(id))
+			state.ProjectLayers[string(id)] = nextLayer
 		}
 	}
 
-	// Evaluate pending projects for the next layer
-	var stillPending []string
+	// Update pending projects from out-of-scope, but exclude those whose
+	// upstreams had no changes, errors, or were skipped (they won't cascade).
+	state.PendingProjects = nil
+	for _, id := range newPlan.OutOfScope {
+		// Check if project's upstream was skipped
+		if state.SkippedUpstreams[string(id)] {
+			continue
+		}
 
-	for _, pendingProject := range state.PendingProjects {
-		deps := state.DependencyGraph[pendingProject]
-		shouldInclude := false
-		allDepsResolved := true
-
-		for _, dep := range deps {
-			depLayer, assigned := state.ProjectLayers[dep]
-			if !assigned {
-				// This dependency hasn't been planned yet, can't evaluate
-				allDepsResolved = false
+		// Check if any upstream dependency has changes (cascade can continue)
+		deps := graph.GetDependencies(id)
+		hasPotentialUpstream := false
+		for _, depID := range deps {
+			// Check if this upstream was skipped
+			if state.SkippedUpstreams[string(depID)] {
 				continue
 			}
-			if depLayer > completedLayer {
-				// Dependency is in a future layer, can't evaluate yet
-				allDepsResolved = false
-				continue
-			}
-			// Check if this dependency was skipped
-			if state.SkippedUpstreams[dep] {
-				shouldInclude = false
-				allDepsResolved = true
-				break // Skip takes precedence
-			}
-			// Check if this dependency had actual changes
-			if projectsWithChanges[dep] {
-				shouldInclude = true
+			status := projectStatuses[depID]
+			if status == layered.ChangeStatusHasChanges || status == 0 {
+				// Upstream has changes or is not yet known (default) - could cascade
+				hasPotentialUpstream = true
+				break
 			}
 		}
-
-		if state.SkippedUpstreams[pendingProject] {
-			continue // Already marked as excluded
+		if hasPotentialUpstream {
+			state.PendingProjects = append(state.PendingProjects, string(id))
 		}
-
-		if !allDepsResolved {
-			stillPending = append(stillPending, pendingProject)
-		} else if shouldInclude {
-			state.ProjectLayers[pendingProject] = nextLayer
-			nextLayerProjects = append(nextLayerProjects, pendingProject)
-		}
-		// If allDepsResolved && !shouldInclude, the project is simply dropped
-		// (cascade stopped because upstream had no changes)
 	}
-
-	state.PendingProjects = stillPending
 
 	nextLayerProjects = deduplicate(nextLayerProjects)
 
@@ -348,15 +295,45 @@ func (m *DefaultLayerStateManager) AdvanceLayer(
 		if nextLayer >= state.TotalLayers {
 			state.TotalLayers = nextLayer + 1
 		}
-	} else if len(stillPending) == 0 {
-		// No more projects to plan - all done
+	} else if len(state.PendingProjects) == 0 {
 		state.CurrentLayer = -1
 	} else {
-		// There are still pending projects but none are ready yet
 		state.CurrentLayer = nextLayer
 	}
 
 	return state, nextLayerProjects, nil
+}
+
+// buildLayerPlanFromState reconstructs a LayerPlan from LayerState
+func (m *DefaultLayerStateManager) buildLayerPlanFromState(state *models.LayerState) *layered.LayerPlan {
+	layers := make([]layered.Layer, state.TotalLayers)
+	for i := range layers {
+		layers[i] = layered.Layer{Index: i}
+	}
+
+	for proj, layer := range state.ProjectLayers {
+		if layer < len(layers) {
+			layers[layer].Projects = append(layers[layer].Projects, layered.ProjectID(proj))
+		}
+	}
+
+	// Sort projects in each layer for determinism
+	for i := range layers {
+		sort.Slice(layers[i].Projects, func(a, b int) bool {
+			return layers[i].Projects[a] < layers[i].Projects[b]
+		})
+	}
+
+	outOfScope := make([]layered.ProjectID, len(state.PendingProjects))
+	for i, p := range state.PendingProjects {
+		outOfScope[i] = layered.ProjectID(p)
+	}
+
+	return &layered.LayerPlan{
+		Layers:            layers,
+		OutOfScope:        outOfScope,
+		TotalProjectCount: len(state.ProjectLayers) + len(state.PendingProjects),
+	}
 }
 
 func (m *DefaultLayerStateManager) SkipProject(
@@ -415,14 +392,20 @@ func (m *DefaultLayerStateManager) markDependentsExcluded(
 	state *models.LayerState,
 	projectName string,
 ) {
-	reverseDeps := buildReverseDependencyMap(state.DependencyGraph)
+	graph := state.Graph
+	if graph == nil {
+		return
+	}
+
 	var exclude func(name string)
 	exclude = func(name string) {
-		for _, dep := range reverseDeps[name] {
-			state.SkippedUpstreams[dep] = true
+		dependents := graph.GetDependents(layered.ProjectID(name))
+		for _, dep := range dependents {
+			depStr := string(dep)
+			state.SkippedUpstreams[depStr] = true
 			// Remove from pending if present
 			for i, p := range state.PendingProjects {
-				if p == dep {
+				if p == depStr {
 					state.PendingProjects = append(
 						state.PendingProjects[:i],
 						state.PendingProjects[i+1:]...,
@@ -430,7 +413,7 @@ func (m *DefaultLayerStateManager) markDependentsExcluded(
 					break
 				}
 			}
-			exclude(dep) // recursive
+			exclude(depStr)
 		}
 	}
 	exclude(projectName)
@@ -601,4 +584,20 @@ func (m *DefaultLayerStateManager) StampLayerAssignments(pullStatus *models.Pull
 			proj.Layer = layer
 		}
 	}
+}
+
+// deduplicate removes duplicate strings from a slice while preserving order.
+func deduplicate(items []string) []string {
+	if items == nil {
+		return nil
+	}
+	seen := make(map[string]bool)
+	var result []string
+	for _, item := range items {
+		if !seen[item] {
+			seen[item] = true
+			result = append(result, item)
+		}
+	}
+	return result
 }

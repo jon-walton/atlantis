@@ -8,10 +8,19 @@ import (
 
 	"github.com/runatlantis/atlantis/server/events"
 	"github.com/runatlantis/atlantis/server/events/command"
+	"github.com/runatlantis/atlantis/server/events/layered"
 	"github.com/runatlantis/atlantis/server/events/models"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// mustBuildGraphLM creates a DependencyGraph for testing, panicking on error.
+func mustBuildGraphLM(t *testing.T, nodes []layered.ProjectNode) *layered.DependencyGraph {
+	t.Helper()
+	g, err := layered.NewDependencyGraph(nodes)
+	require.NoError(t, err)
+	return g
+}
 
 func TestLayerManager_ShouldActivate(t *testing.T) {
 	lm := events.NewLayerManager(events.NewLayerStateManager(), nil)
@@ -62,7 +71,7 @@ func TestLayerManager_InitializeLayerState(t *testing.T) {
 	state, err := lm.InitializeLayerState(cmds)
 	require.NoError(t, err)
 	require.NotNil(t, state)
-	assert.True(t, state.Enabled)
+	assert.True(t, state.Enabled())
 	assert.Equal(t, 2, state.TotalLayers)
 	assert.Equal(t, 0, state.CurrentLayer)
 	assert.Equal(t, 0, state.ProjectLayers["base"])
@@ -85,16 +94,29 @@ func TestLayerManager_InitializeLayerState_NoDeps(t *testing.T) {
 func TestLayerManager_HasMultipleLayers(t *testing.T) {
 	lm := events.NewLayerManager(events.NewLayerStateManager(), nil)
 
+	// Build graphs for enabled states
+	singleLayerGraph := mustBuildGraphLM(t, []layered.ProjectNode{
+		{ID: "a", DependsOn: nil, HasFileChanges: true},
+	})
+	multiLayerGraph := mustBuildGraphLM(t, []layered.ProjectNode{
+		{ID: "a", DependsOn: nil, HasFileChanges: true},
+		{ID: "b", DependsOn: []layered.ProjectID{"a"}, HasFileChanges: true},
+	})
+
 	assert.False(t, lm.HasMultipleLayers(nil))
-	assert.False(t, lm.HasMultipleLayers(&models.LayerState{TotalLayers: 1}))
-	assert.True(t, lm.HasMultipleLayers(&models.LayerState{TotalLayers: 2}))
+	assert.False(t, lm.HasMultipleLayers(&models.LayerState{Graph: singleLayerGraph, TotalLayers: 1}))
+	assert.True(t, lm.HasMultipleLayers(&models.LayerState{Graph: multiLayerGraph, TotalLayers: 2}))
 }
 
 func TestLayerManager_FilterToCurrentLayer(t *testing.T) {
 	lm := events.NewLayerManager(events.NewLayerStateManager(), nil)
 
+	graph := mustBuildGraphLM(t, []layered.ProjectNode{
+		{ID: "base", DependsOn: nil, HasFileChanges: true},
+		{ID: "child", DependsOn: []layered.ProjectID{"base"}, HasFileChanges: true},
+	})
 	state := &models.LayerState{
-		Enabled:      true,
+		Graph:        graph,
 		CurrentLayer: 0,
 		TotalLayers:  2,
 		ProjectLayers: map[string]int{
@@ -128,8 +150,14 @@ func TestLayerManager_FilterToCurrentLayer_NilState(t *testing.T) {
 func TestLayerManager_FilterToCurrentLayer_Layer1(t *testing.T) {
 	lm := events.NewLayerManager(events.NewLayerStateManager(), nil)
 
+	graph := mustBuildGraphLM(t, []layered.ProjectNode{
+		{ID: "base", DependsOn: nil, HasFileChanges: true},
+		{ID: "mid", DependsOn: []layered.ProjectID{"base"}, HasFileChanges: true},
+		{ID: "mid2", DependsOn: []layered.ProjectID{"base"}, HasFileChanges: true},
+		{ID: "grandchild", DependsOn: []layered.ProjectID{"mid"}, HasFileChanges: true},
+	})
 	state := &models.LayerState{
-		Enabled:      true,
+		Graph:        graph,
 		CurrentLayer: 1,
 		TotalLayers:  3,
 		ProjectLayers: map[string]int{
@@ -160,8 +188,12 @@ func TestLayerManager_FilterToCurrentLayer_Layer1(t *testing.T) {
 func TestLayerManager_IsInCurrentLayer(t *testing.T) {
 	lm := events.NewLayerManager(events.NewLayerStateManager(), nil)
 
+	graph := mustBuildGraphLM(t, []layered.ProjectNode{
+		{ID: "base", DependsOn: nil, HasFileChanges: true},
+		{ID: "child", DependsOn: []layered.ProjectID{"base"}, HasFileChanges: true},
+	})
 	state := &models.LayerState{
-		Enabled:      true,
+		Graph:        graph,
 		CurrentLayer: 0,
 		TotalLayers:  2,
 		ProjectLayers: map[string]int{
@@ -178,8 +210,13 @@ func TestLayerManager_IsInCurrentLayer(t *testing.T) {
 func TestLayerManager_IsInCurrentLayer_FutureLayerRejected(t *testing.T) {
 	lm := events.NewLayerManager(events.NewLayerStateManager(), nil)
 
+	graph := mustBuildGraphLM(t, []layered.ProjectNode{
+		{ID: "base", DependsOn: nil, HasFileChanges: true},
+		{ID: "mid", DependsOn: []layered.ProjectID{"base"}, HasFileChanges: true},
+		{ID: "grandchild", DependsOn: []layered.ProjectID{"mid"}, HasFileChanges: true},
+	})
 	state := &models.LayerState{
-		Enabled:      true,
+		Graph:        graph,
 		CurrentLayer: 0,
 		TotalLayers:  3,
 		ProjectLayers: map[string]int{
@@ -203,8 +240,13 @@ func TestLayerManager_IsInCurrentLayer_FutureLayerRejected(t *testing.T) {
 func TestLayerManager_IsInCurrentLayer_AdvancedToLayer1(t *testing.T) {
 	lm := events.NewLayerManager(events.NewLayerStateManager(), nil)
 
+	graph := mustBuildGraphLM(t, []layered.ProjectNode{
+		{ID: "base", DependsOn: nil, HasFileChanges: true},
+		{ID: "mid", DependsOn: []layered.ProjectID{"base"}, HasFileChanges: true},
+		{ID: "grandchild", DependsOn: []layered.ProjectID{"mid"}, HasFileChanges: true},
+	})
 	state := &models.LayerState{
-		Enabled:      true,
+		Graph:        graph,
 		CurrentLayer: 1,
 		TotalLayers:  3,
 		ProjectLayers: map[string]int{
@@ -227,8 +269,14 @@ func TestLayerManager_IsInCurrentLayer_AdvancedToLayer1(t *testing.T) {
 func TestLayerManager_FilterToCurrentLayer_ExcludesFutureAndPast(t *testing.T) {
 	lm := events.NewLayerManager(events.NewLayerStateManager(), nil)
 
+	graph := mustBuildGraphLM(t, []layered.ProjectNode{
+		{ID: "base", DependsOn: nil, HasFileChanges: true},
+		{ID: "mid-a", DependsOn: []layered.ProjectID{"base"}, HasFileChanges: true},
+		{ID: "mid-b", DependsOn: []layered.ProjectID{"base"}, HasFileChanges: true},
+		{ID: "grandchild", DependsOn: []layered.ProjectID{"mid-a"}, HasFileChanges: true},
+	})
 	state := &models.LayerState{
-		Enabled:      true,
+		Graph:        graph,
 		CurrentLayer: 1,
 		TotalLayers:  3,
 		ProjectLayers: map[string]int{
@@ -261,8 +309,12 @@ func TestLayerManager_FilterToCurrentLayer_ExcludesFutureAndPast(t *testing.T) {
 func TestLayerManager_StampAndSaveLayerState(t *testing.T) {
 	lm := events.NewLayerManager(events.NewLayerStateManager(), nil)
 
+	graph := mustBuildGraphLM(t, []layered.ProjectNode{
+		{ID: "base", DependsOn: nil, HasFileChanges: true},
+		{ID: "child", DependsOn: []layered.ProjectID{"base"}, HasFileChanges: true},
+	})
 	state := &models.LayerState{
-		Enabled:      true,
+		Graph:        graph,
 		CurrentLayer: 0,
 		TotalLayers:  2,
 		ProjectLayers: map[string]int{

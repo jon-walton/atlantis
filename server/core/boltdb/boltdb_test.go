@@ -24,6 +24,7 @@ import (
 	"github.com/runatlantis/atlantis/server/core/boltdb"
 
 	"github.com/runatlantis/atlantis/server/events/command"
+	"github.com/runatlantis/atlantis/server/events/layered"
 	"github.com/runatlantis/atlantis/server/events/models"
 	. "github.com/runatlantis/atlantis/testing"
 	bolt "go.etcd.io/bbolt"
@@ -1771,15 +1772,18 @@ func TestUpdateLayerState(t *testing.T) {
 	})
 	Ok(t, err)
 
+	// Build a typed graph for layer state
+	graph, err := layered.NewDependencyGraph([]layered.ProjectNode{
+		{ID: "A", DependsOn: nil, HasFileChanges: true},
+		{ID: "B", DependsOn: []layered.ProjectID{"A"}, HasFileChanges: true},
+	})
+	Ok(t, err)
+
 	// Now update with layer state
 	layerState := &models.LayerState{
-		Enabled:      true,
+		Graph:        graph,
 		CurrentLayer: 0,
 		TotalLayers:  2,
-		DependencyGraph: map[string][]string{
-			"A": {},
-			"B": {"A"},
-		},
 		ProjectLayers: map[string]int{
 			"A": 0,
 			"B": 1,
@@ -1795,7 +1799,7 @@ func TestUpdateLayerState(t *testing.T) {
 	Ok(t, err)
 	Assert(t, status != nil, "expected non-nil pull status")
 	Assert(t, status.LayerState != nil, "expected non-nil layer state")
-	Equals(t, true, status.LayerState.Enabled)
+	Assert(t, status.LayerState.Enabled(), "expected layer state to be enabled")
 	Equals(t, 0, status.LayerState.CurrentLayer)
 	Equals(t, 2, status.LayerState.TotalLayers)
 	Equals(t, []string{"C"}, status.LayerState.PendingProjects)
@@ -1826,7 +1830,13 @@ func TestUpdateLayerState_NoPull(t *testing.T) {
 		},
 	}
 
+	// Build a minimal graph to enable layer state
+	graph, err := layered.NewDependencyGraph([]layered.ProjectNode{
+		{ID: "test", DependsOn: nil, HasFileChanges: true},
+	})
+	Ok(t, err)
+
 	// Should not error even though no pull exists
-	err := db.UpdateLayerState(pull, &models.LayerState{Enabled: true})
+	err = db.UpdateLayerState(pull, &models.LayerState{Graph: graph})
 	Ok(t, err)
 }
