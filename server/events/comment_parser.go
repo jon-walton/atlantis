@@ -260,9 +260,6 @@ func (e *CommentParser) Parse(rawComment string, vcsHost models.VCSHostType) Com
 		flagSet.BoolVarP(&autoMergeDisabled, autoMergeDisabledFlagLong, autoMergeDisabledFlagShort, false, "Disable automerge after apply.")
 		flagSet.StringVarP(&autoMergeMethod, autoMergeMethodFlagLong, autoMergeMethodFlagShort, "", "Specifies the merge method for the VCS if automerge is enabled. (Currently only implemented for GitHub)")
 		flagSet.BoolVarP(&verbose, verboseFlagLong, verboseFlagShort, false, "Append Atlantis log to comment.")
-		if e.EnableLayeredApplySkip {
-			flagSet.StringVar(&skipProject, "skip", "", "Skip a failed project in the current layer (layered planning only).")
-		}
 	case command.ApprovePolicies.String():
 		name = command.ApprovePolicies
 		flagSet = pflag.NewFlagSet(command.ApprovePolicies.String(), pflag.ContinueOnError)
@@ -281,6 +278,13 @@ func (e *CommentParser) Parse(rawComment string, vcsHost models.VCSHostType) Com
 		name = command.Cancel
 		flagSet = pflag.NewFlagSet(command.Cancel.String(), pflag.ContinueOnError)
 		flagSet.SetOutput(io.Discard)
+	case command.Skip.String():
+		name = command.Skip
+		flagSet = pflag.NewFlagSet(command.Skip.String(), pflag.ContinueOnError)
+		flagSet.SetOutput(io.Discard)
+		flagSet.StringVarP(&workspace, workspaceFlagLong, workspaceFlagShort, "", "Skip the project in this workspace.")
+		flagSet.StringVarP(&dir, dirFlagLong, dirFlagShort, "", "Skip the project in this directory, relative to root of repo.")
+		flagSet.StringVarP(&project, projectFlagLong, projectFlagShort, "", "Skip this project by name.")
 	case command.Version.String():
 		name = command.Version
 		flagSet = pflag.NewFlagSet(command.Version.String(), pflag.ContinueOnError)
@@ -311,6 +315,19 @@ func (e *CommentParser) Parse(rawComment string, vcsHost models.VCSHostType) Com
 	subName, extraArgs, errResult := e.parseArgs(name, args, flagSet)
 	if errResult != "" {
 		return CommentParseResult{CommentResponse: errResult}
+	}
+
+	// For skip command, first positional arg is the project name if -p not specified
+	if name == command.Skip && project == "" {
+		remainingArgs := flagSet.Args()
+		if len(remainingArgs) > 0 {
+			project = remainingArgs[0]
+		}
+	}
+
+	// For skip command, copy project to skipProject for downstream handling
+	if name == command.Skip {
+		skipProject = project
 	}
 
 	dir, err = e.validateDir(dir)
@@ -345,13 +362,6 @@ func (e *CommentParser) Parse(rawComment string, vcsHost models.VCSHostType) Com
 			err := fmt.Sprintf("--%s is not currently implemented for %s", autoMergeMethodFlagLong, vcsHost.String())
 			return CommentParseResult{CommentResponse: e.errMarkdown(err, cmd, flagSet)}
 		}
-	}
-
-	// Validate --skip cannot be used with -d/-p/-w
-	if skipProject != "" && (dir != "" || workspace != "" || project != "") {
-		return CommentParseResult{CommentResponse: e.errMarkdown(
-			"cannot use --skip at the same time as -d/-w/-p flags",
-			cmd, flagSet)}
 	}
 
 	return CommentParseResult{

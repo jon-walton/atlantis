@@ -568,7 +568,7 @@ atlantis server --enable-layered-apply-skip
 ATLANTIS_ENABLE_LAYERED_APPLY_SKIP=true
 ```
 
-Enable the `atlantis apply -skip` command to skip failed applies in the current layer. Requires `--enable-layered-planning` to also be set.
+Enable the `atlantis skip` command to skip failed applies in the current layer. Requires `--enable-layered-planning` to also be set.
 
 ### `--enable-layered-planning`
 

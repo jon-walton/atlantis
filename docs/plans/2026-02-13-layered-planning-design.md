@@ -131,6 +131,10 @@ When new commits are pushed, determine which projects are affected by the change
 
 ## Skip Functionality
 
+Skip allows operators to unblock a stalled layer when one project's apply fails. In a layered workflow, a single failure blocks the entire layer from completing, which means unrelated projects in later layers never get planned. Skipping a failed apply allows the layer to advance so independent branches of the dependency graph can proceed. The skipped project's downstream dependents are automatically excluded from subsequent layers.
+
+**Mergeability:** Skipped projects keep the PR non-mergeable. The commit status remains "pending" until the skipped project and downstream dependencies are fixed and applied, ensuring all infrastructure is addressed before the PR closes.
+
 ### Configuration
 
 Server-side config flag `enable-layered-apply-skip` — default off.
@@ -139,7 +143,8 @@ Server-side config flag `enable-layered-apply-skip` — default off.
 
 When enabled:
 
-- User can run `atlantis apply -skip <project>` to mark a failed project as skipped.
+- User can run `atlantis skip <project>` to mark a failed project as skipped.
+- Alternative syntax: `atlantis skip -p <project>` or `atlantis skip -d <dir> -w <workspace>`
 - Skipped projects show as `⏭️ Skipped - <project>` in the dashboard.
 - A skipped project's downstream dependents are excluded from subsequent layers (cascade stops).
 - A layer can advance once all projects are either applied, no changes, or skipped.
@@ -207,5 +212,5 @@ Validates: autoplan triggers only layer 0 → apply → layer 1 auto-plans → a
 
 - Automatic layer calculation replacing `execution_order_group` (migration path).
 - Any UI beyond PR comments.
-- Cross-PR dependency awareness.
 - Partial layer advancement (different branches of the graph progressing independently).
+- Reverse ordering for deletes

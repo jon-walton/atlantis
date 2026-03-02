@@ -649,7 +649,7 @@ const (
 	// PassedPolicyCheckStatus means that there was an unapplied plan that was
 	// discarded due to a project being unlocked
 	PassedPolicyCheckStatus
-	// SkippedPlanStatus means that the project was skipped via `atlantis apply -skip`.
+	// SkippedPlanStatus means that the project was skipped via `atlantis skip`.
 	SkippedPlanStatus
 )
 

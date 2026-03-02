@@ -891,6 +891,15 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 		userConfig.SilenceNoProjects,
 	)
 
+	skipCommandRunner := events.NewSkipCommandRunner(
+		vcsClient,
+		layerManager,
+		commitStatusUpdater,
+		userConfig.EnableLayeredPlanning,
+		userConfig.EnableLayeredApplySkip,
+		database,
+	)
+
 	commentCommandRunnerByCmd := map[command.Name]events.CommentCommandRunner{
 		command.Plan:            planCommandRunner,
 		command.Apply:           applyCommandRunner,
@@ -900,6 +909,7 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 		command.Import:          importCommandRunner,
 		command.State:           stateCommandRunner,
 		command.Cancel:          cancelCommandRunner,
+		command.Skip:            skipCommandRunner,
 	}
 
 	var teamAllowlistChecker command.TeamAllowlistChecker

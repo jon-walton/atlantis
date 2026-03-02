@@ -548,7 +548,7 @@ var boolFlags = map[string]boolFlag{
 		defaultValue: false,
 	},
 	EnableLayeredApplySkipFlag: {
-		description:  "Enable the 'atlantis apply -skip' command to skip failed applies in the current layer. Requires enable-layered-planning to also be set.",
+		description:  "Enable the 'atlantis skip' command to skip failed applies in the current layer. Requires enable-layered-planning to also be set.",
 		defaultValue: false,
 	},
 	EnableLayeredPlanningFlag: {

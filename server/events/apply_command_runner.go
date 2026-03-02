@@ -82,12 +82,6 @@ type ApplyCommandRunner struct {
 }
 
 func (a *ApplyCommandRunner) Run(ctx *command.Context, cmd *CommentCommand) {
-	// Handle skip command
-	if cmd.SkipProject != "" {
-		a.handleSkip(ctx, cmd)
-		return
-	}
-
 	var err error
 	baseRepo := ctx.Pull.BaseRepo
 	pull := ctx.Pull
@@ -345,70 +339,6 @@ func (a *ApplyCommandRunner) handleLayerCompletion(
 
 	ctx.Log.Warn("auto-advance safety bound reached after %d iterations", maxIterations)
 	a.layerManager.UpdateDashboard(ctx, pullStatus)
-}
-
-// handleSkip handles the `atlantis apply --skip <project>` command.
-func (a *ApplyCommandRunner) handleSkip(ctx *command.Context, cmd *CommentCommand) {
-	pull := ctx.Pull
-
-	if a.layerManager == nil {
-		if err := a.vcsClient.CreateComment(ctx.Log, pull.BaseRepo, pull.Num,
-			"**Error:** `--skip` requires layered planning to be enabled.",
-			command.Apply.String()); err != nil {
-			ctx.Log.Err("unable to comment on pull request: %s", err)
-		}
-		return
-	}
-
-	pullStatus, err := a.Database.GetPullStatus(pull)
-	if err != nil || pullStatus == nil || pullStatus.LayerState == nil {
-		if err := a.vcsClient.CreateComment(ctx.Log, pull.BaseRepo, pull.Num,
-			"**Error:** No active layered planning state found for this pull request.",
-			command.Apply.String()); err != nil {
-			ctx.Log.Err("unable to comment on pull request: %s", err)
-		}
-		return
-	}
-
-	// Use the state manager to skip the project
-	updatedStatus, err := a.layerManager.stateManager.SkipProject(pullStatus, cmd.SkipProject, true)
-	if err != nil {
-		if err := a.vcsClient.CreateComment(ctx.Log, pull.BaseRepo, pull.Num,
-			fmt.Sprintf("**Error:** Could not skip project `%s`: %s", cmd.SkipProject, err),
-			command.Apply.String()); err != nil {
-			ctx.Log.Err("unable to comment on pull request: %s", err)
-		}
-		return
-	}
-
-	// Save updated layer state and persist the project's new SkippedPlanStatus
-	// so the skip survives a server restart.
-	if a.Database != nil {
-		if err := a.Database.UpdateLayerState(pull, updatedStatus.LayerState); err != nil {
-			ctx.Log.Err("saving layer state after skip: %s", err)
-		}
-		// Find the skipped project to get workspace/repoRelDir for persistence
-		for _, proj := range updatedStatus.Projects {
-			if proj.ProjectName == cmd.SkipProject && proj.Status == models.SkippedPlanStatus {
-				if err := a.Database.UpdateProjectStatus(pull, proj.Workspace, proj.RepoRelDir, models.SkippedPlanStatus); err != nil {
-					ctx.Log.Err("persisting skip status: %s", err)
-				}
-				break
-			}
-		}
-	}
-
-	if err := a.vcsClient.CreateComment(ctx.Log, pull.BaseRepo, pull.Num,
-		fmt.Sprintf("Project `%s` has been skipped.", cmd.SkipProject),
-		command.Apply.String()); err != nil {
-		ctx.Log.Err("unable to comment on pull request: %s", err)
-	}
-
-	a.updateCommitStatus(ctx, *updatedStatus)
-	a.layerManager.UpdateDashboard(ctx, updatedStatus)
-
-	// Check if skipping completed the layer
-	a.handleLayerCompletion(ctx, cmd, updatedStatus, updatedStatus.LayerState)
 }
 
 // markProjectsApplying updates the DB and dashboard to show "Applying..."

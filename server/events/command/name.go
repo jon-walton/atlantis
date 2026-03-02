@@ -35,6 +35,8 @@ const (
 	State
 	// Cancel is a command to cancel running plan or apply operations
 	Cancel
+	// Skip is a command to skip a failed project in layered planning
+	Skip
 	// Adding more? Don't forget to update String() below
 )
 
@@ -49,6 +51,7 @@ var AllCommentCommands = []Name{
 	Plan,
 	Apply,
 	Cancel,
+	Skip,
 	Unlock,
 	ApprovePolicies,
 	Import,
@@ -82,6 +85,8 @@ func (c Name) String() string {
 		return "state"
 	case Cancel:
 		return "cancel"
+	case Skip:
+		return "skip"
 	}
 	return ""
 }
@@ -118,6 +123,8 @@ func (c Name) CommandArgCount(subCommand string) (*ArgCount, error) {
 			return &ArgCount{1, -1}, nil // "atlantis state rm ADDRESS..."
 		}
 		return nil, fmt.Errorf("command arg count unknown sub command: %s", subCommand)
+	case Skip:
+		return &ArgCount{0, 1}, nil // "atlantis skip [PROJECT]" - optional positional project name
 	default:
 		return &ArgCount{0, 0}, nil // other command doesn't require any args
 	}
@@ -159,6 +166,8 @@ func ParseCommandName(name string) (Name, error) {
 		return State, nil
 	case "cancel":
 		return Cancel, nil
+	case "skip":
+		return Skip, nil
 	}
 	return -1, fmt.Errorf("unknown command name: %s", name)
 }

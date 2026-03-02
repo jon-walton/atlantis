@@ -1169,16 +1169,7 @@ var ImportUsage = `Usage of import ADDRESS ID:
   -w, --workspace string   Switch to this Terraform workspace before importing.
 `
 
-func TestParse_ApplySkipFlag(t *testing.T) {
-	skipParser := events.CommentParser{
-		GithubUser:             "github-user",
-		GitlabUser:             "gitlab-user",
-		GiteaUser:              "gitea-user",
-		ExecutableName:         "atlantis",
-		AllowCommands:          command.AllCommentCommands,
-		EnableLayeredApplySkip: true,
-	}
-
+func TestParse_SkipCommand(t *testing.T) {
 	tests := []struct {
 		name        string
 		comment     string
@@ -1188,32 +1179,46 @@ func TestParse_ApplySkipFlag(t *testing.T) {
 		errContains string
 	}{
 		{
-			name:    "skip flag with project name",
-			comment: "atlantis apply --skip myproject",
-			expSkip: "myproject",
+			name:       "skip with positional project name",
+			comment:    "atlantis skip myproject",
+			expSkip:    "myproject",
+			expProject: "myproject",
 		},
 		{
-			name:    "skip flag no value",
-			comment: "atlantis apply --skip",
-			expErr:  true,
+			name:       "skip with -p flag",
+			comment:    "atlantis skip -p myproject",
+			expSkip:    "myproject",
+			expProject: "myproject",
 		},
 		{
-			name:        "skip flag with dir flag",
-			comment:     "atlantis apply --skip myproject -d somedir",
+			name:       "skip with --project flag",
+			comment:    "atlantis skip --project myproject",
+			expSkip:    "myproject",
+			expProject: "myproject",
+		},
+		{
+			name:       "skip with no project (allowed - empty)",
+			comment:    "atlantis skip",
+			expSkip:    "",
+			expProject: "",
+		},
+		{
+			name:        "skip with -p and -d flags",
+			comment:     "atlantis skip -p myproject -d somedir",
 			expErr:      true,
-			errContains: "cannot use --skip at the same time as -d/-w/-p flags",
+			errContains: "cannot use -p/--project at same time as -d/--dir or -w/--workspace",
 		},
 		{
-			name:        "skip flag with project flag",
-			comment:     "atlantis apply --skip myproject -p otherproject",
+			name:        "skip with -p and -w flags",
+			comment:     "atlantis skip -p myproject -w someworkspace",
 			expErr:      true,
-			errContains: "cannot use --skip at the same time as -d/-w/-p flags",
+			errContains: "cannot use -p/--project at same time as -d/--dir or -w/--workspace",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			r := skipParser.Parse(tt.comment, models.Github)
+			r := commentParser.Parse(tt.comment, models.Github)
 			if tt.expErr {
 				assert.NotEmpty(t, r.CommentResponse,
 					"expected error response but got command: %+v", r.Command)
@@ -1223,15 +1228,17 @@ func TestParse_ApplySkipFlag(t *testing.T) {
 			} else {
 				require.NotNil(t, r.Command)
 				assert.Equal(t, tt.expSkip, r.Command.SkipProject)
-				assert.Equal(t, command.Apply, r.Command.Name)
+				assert.Equal(t, tt.expProject, r.Command.ProjectName)
+				assert.Equal(t, command.Skip, r.Command.Name)
 			}
 		})
 	}
 }
 
-func TestParse_ApplySkipDisabled(t *testing.T) {
-	// When EnableLayeredApplySkip is false, --skip flag should not be recognized
+func TestParse_ApplyNoSkipFlag(t *testing.T) {
+	// The --skip flag should no longer be recognized on apply command
 	r := commentParser.Parse("atlantis apply --skip myproject", models.Github)
-	// Should fail parsing since --skip is unknown
-	assert.NotEmpty(t, r.CommentResponse, "expected error when skip is disabled")
+	// Should fail parsing since --skip is now an unknown flag
+	assert.NotEmpty(t, r.CommentResponse, "expected error for unknown --skip flag on apply")
+	assert.Contains(t, r.CommentResponse, "unknown flag: --skip")
 }
