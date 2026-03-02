@@ -87,6 +87,54 @@ func TestApplyUpdateCommitStatus(t *testing.T) {
 			expNumSuccess: 2,
 			expNumTotal:   2,
 		},
+		"apply, one skipped blocks merge": {
+			cmd: command.Apply,
+			pullStatus: models.PullStatus{
+				Projects: []models.ProjectStatus{
+					{
+						Status: models.AppliedStatus,
+					},
+					{
+						Status: models.SkippedPlanStatus,
+					},
+				},
+			},
+			expStatus:     models.PendingCommitStatus,
+			expNumSuccess: 1,
+			expNumTotal:   2,
+		},
+		"apply, all skipped blocks merge": {
+			cmd: command.Apply,
+			pullStatus: models.PullStatus{
+				Projects: []models.ProjectStatus{
+					{
+						Status: models.SkippedPlanStatus,
+					},
+					{
+						Status: models.SkippedPlanStatus,
+					},
+				},
+			},
+			expStatus:     models.PendingCommitStatus,
+			expNumSuccess: 0,
+			expNumTotal:   2,
+		},
+		"apply, skipped with no-changes blocks merge": {
+			cmd: command.Apply,
+			pullStatus: models.PullStatus{
+				Projects: []models.ProjectStatus{
+					{
+						Status: models.PlannedNoChangesPlanStatus,
+					},
+					{
+						Status: models.SkippedPlanStatus,
+					},
+				},
+			},
+			expStatus:     models.PendingCommitStatus,
+			expNumSuccess: 1,
+			expNumTotal:   2,
+		},
 	}
 
 	for name, c := range cases {
